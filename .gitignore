@@ -1,0 +1,5 @@
+.idea/
+*.json
+*.pem
+bp
+__debug*
