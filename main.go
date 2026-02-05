@@ -21,15 +21,22 @@ const (
 	queueSize  = 100
 )
 
+// first we recieve signal
+// then we send to exitCh
+// then by recieving from exitCh return from main
+// by returning from main we call defer cancel() which cancels context
+// then in daemon we listen for ctx.Done() and stop workers gracefully
+
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	extAPI := &extapi.ExternalAPIImplementation{}
+	ctx := context.Background()
+	exitCh := make(chan struct{}, 1)
+	client := extapi.New()
 
 	logger := log.New()
 
 	m := metrics.New()
-	d := daemon.New(numWorkers, queueSize, m, cancel, logger)
-	d.Start(ctx, extAPI)
+	d := daemon.New(numWorkers, queueSize, m, logger)
+	d.Start(ctx, client)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -38,29 +45,39 @@ func main() {
 
 	api.Start()
 
+	defer func(d *daemon.Daemon, a *webapi.API) {
+		stop(d, a)
+	}(d, api)
+
 	go func() {
 		for sig := range c {
-			sigHandler(ctx, sig, d, api)
+			sigHandler(sig, exitCh)
 		}
 	}()
 
-	if _, ok := <-d.ExitCh; !ok {
+	if _, ok := <-exitCh; !ok {
 		logger.Info("app exit")
 		return
 	}
+
+	go func() {
+
+	}()
 }
 
-func sigHandler(ctx context.Context, signal os.Signal, d *daemon.Daemon, api *webapi.API) {
+func stop(d *daemon.Daemon, api *webapi.API) {
+	api.Stop()
+	d.Stop()
+}
+
+func sigHandler(signal os.Signal, exitCh chan struct{}) {
 	switch signal {
 	case syscall.SIGTERM:
-		d.Stop()
-		api.Stop(ctx)
+		close(exitCh)
 	case syscall.SIGINT:
-		d.Stop()
-		api.Stop(ctx)
+		close(exitCh)
 	case syscall.SIGKILL:
-		d.Stop()
-		api.Stop(ctx)
+		close(exitCh)
 	default:
 		fmt.Printf("signal %s", signal.String())
 	}

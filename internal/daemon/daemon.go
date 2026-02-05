@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,32 +26,34 @@ type Task struct {
 
 // Генерируем простой ID
 func (d *Daemon) NewTaskID() string {
-	return fmt.Sprintf("task-%d", time.Now().UnixNano()+int64(rand.Intn(1000)))
+	nextID := atomic.AddUint64(&d.taskCounter, 1)
+	return fmt.Sprintf("task-%d", nextID)
 }
 
 type Daemon struct {
 	logger       *log.Logger
+	taskCounter  uint64
 	Metrics      *metrics.Metrics
 	TaskQueue    chan *Task
 	numWorkers   int
 	Wg           *sync.WaitGroup
+	semaphore    chan struct{}
 	workerCancel func()
-	ExitCh       chan struct{}
 }
 
-func New(numWorkers int, queueSize int, m *metrics.Metrics, cancel context.CancelFunc, logger *log.Logger) *Daemon {
+func New(numWorkers int, queueSize int, m *metrics.Metrics, logger *log.Logger) *Daemon {
 	return &Daemon{
-		logger:       logger,
-		Metrics:      m,
-		TaskQueue:    make(chan *Task, queueSize),
-		numWorkers:   numWorkers,
-		Wg:           &sync.WaitGroup{},
-		ExitCh:       make(chan struct{}, 1),
-		workerCancel: cancel,
+		logger:     logger,
+		Metrics:    m,
+		TaskQueue:  make(chan *Task, queueSize),
+		numWorkers: numWorkers,
+		Wg:         &sync.WaitGroup{},
+		semaphore:  make(chan struct{}, numWorkers),
 	}
 }
 
 func (d *Daemon) Start(ctx context.Context, apiCaller ExternalAPICaller) {
+	ctx, d.workerCancel = context.WithCancel(ctx)
 	for i := range d.numWorkers {
 		id := i + 1
 		go d.worker(ctx, apiCaller, id)
@@ -60,18 +61,20 @@ func (d *Daemon) Start(ctx context.Context, apiCaller ExternalAPICaller) {
 }
 
 func (d *Daemon) Stop() {
-	defer close(d.ExitCh)
-
 	doneCh := make(chan struct{})
 	go func() {
-		close(d.TaskQueue)
+		defer close(d.TaskQueue)
 		d.Wg.Wait()
 		close(doneCh)
 	}()
 
 	select {
 	case <-doneCh:
+		// this mean all workers done their jobs either naturally and all of them hit d.Wg.Done()
+		// or by context with timeout cancellation. We unblock select with recieving from doneCh and continue to print metrics
 	case <-time.After(10 * time.Second):
+		// if workers not done by 10 seconds we force cancel them. All workers inside have timeout handling
+		// so they will exit gracefully by themselves after timeout and this case just for safety IN THEORY
 		d.workerCancel()
 		d.logger.Info("force exit after timeout")
 	}
@@ -80,21 +83,17 @@ func (d *Daemon) Stop() {
 	if err != nil {
 		d.logger.WithError(err).Error("Failed to format metrics")
 	}
-	d.logger.Info("Metrics", "data", string(formattedMetrics))
+	d.logger.Info(string(formattedMetrics))
 	d.logger.Info("All workers have stopped")
 }
 
 func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, workerID int) {
-	for {
-		select {
-		case <-ctx.Done():
-			d.logger.WithFields(log.Fields{"workerId": workerID}).Info("stopped by context done")
-			return
-		case task, ok := <-d.TaskQueue:
-			if !ok {
-				d.logger.WithFields(log.Fields{"workerId": workerID}).Info("quit due to task queue closed")
-				return
-			}
+	select {
+	case <-ctx.Done():
+		d.logger.WithFields(log.Fields{"workerId": workerID}).Info("stopped by context done")
+		return
+	default:
+		for task := range d.TaskQueue {
 			select {
 			case <-ctx.Done():
 				d.logger.WithFields(log.Fields{"workerId": workerID}).Info("stopped by context done")
@@ -102,15 +101,16 @@ func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, worker
 			default:
 				d.Metrics.SetActiveTaskID(task.ID)
 				d.Wg.Add(1)
+				d.semaphore <- struct{}{}
 				go d.processingWithTimeout(ctx, apiCaller, workerID, task)
 			}
-
 		}
 	}
 }
 
 func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAPICaller, workerID int, task *Task) {
 	defer d.Wg.Done()
+	defer func() { <-d.semaphore }()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(3)*time.Second)
 	defer cancel()
 
@@ -120,7 +120,6 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		finishedAt := time.Since(startedAt)
 		d.Metrics.AddTaskDuration(finishedAt)
 		d.Metrics.UnsetActiveTaskID(task.ID)
-		d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID, "duration": finishedAt}).Info("finished processing")
 	}()
 
 	doneProcessing := make(chan struct{})
