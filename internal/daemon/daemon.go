@@ -113,12 +113,6 @@ func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, worker
 			d.addActiveTask(task.ID, workerID)
 			d.Wg.Add(1)
 			d.processingWithTimeout(d.baseCtx, apiCaller, workerID, task)
-			// select {
-			// case <-ctx.Done():
-			// 	d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID}).Info("stopped by context done before processing task")
-			// 	return
-			// default:
-			// }
 		}
 	}
 }
