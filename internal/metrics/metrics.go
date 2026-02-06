@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"encoding/json"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,7 +11,7 @@ import (
 type MetricsResponse struct {
 	TasksSubmitted    uint64
 	TaskMeanDuration  string
-	ActiveTaskIDs     []string
+	ActiveTaskIDs     map[string]int
 	TaskErrorsTotal   uint64
 	TaskTimeoutsTotal uint64
 }
@@ -22,7 +20,7 @@ type Metrics struct {
 	Mux             *sync.RWMutex
 	TaskErrorsTotal uint64
 	TimeoutsTotal   uint64
-	ActiveTaskIDs   map[string]struct{}
+	ActiveTaskIDs   map[string]int
 	TaskDurations   []time.Duration
 	Submitted       uint64
 }
@@ -30,7 +28,7 @@ type Metrics struct {
 func New() *Metrics {
 	return &Metrics{
 		Mux:           &sync.RWMutex{},
-		ActiveTaskIDs: make(map[string]struct{}),
+		ActiveTaskIDs: make(map[string]int),
 		TaskDurations: make([]time.Duration, 0),
 	}
 }
@@ -46,22 +44,10 @@ func (m *Metrics) GetMetrics() *MetricsResponse {
 	}
 }
 
-func (m *Metrics) MetricsHandler(w http.ResponseWriter, _ *http.Request) {
-	resp := m.GetMetrics()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	formattedResponse, err := json.MarshalIndent(resp, "", "  ")
-	if err != nil {
-		http.Error(w, "Failed to format response", http.StatusInternalServerError)
-		return
-	}
-	w.Write(formattedResponse)
-}
-
-func (m *Metrics) SetActiveTaskID(taskID string) {
+func (m *Metrics) SetActiveTaskID(taskID string, workerID int) {
 	m.Mux.Lock()
 	defer m.Mux.Unlock()
-	m.ActiveTaskIDs[taskID] = struct{}{}
+	m.ActiveTaskIDs[taskID] = workerID
 }
 
 func (m *Metrics) UnsetActiveTaskID(taskID string) {
@@ -78,12 +64,8 @@ func (m *Metrics) GetTaskTimeoutsTotal() uint64 {
 	return atomic.LoadUint64(&m.TimeoutsTotal)
 }
 
-func (m *Metrics) GetActiveTaskIDs() []string {
-	res := make([]string, 0, len(m.ActiveTaskIDs))
-	for id := range m.ActiveTaskIDs {
-		res = append(res, id)
-	}
-	return res
+func (m *Metrics) GetActiveTaskIDs() map[string]int {
+	return m.ActiveTaskIDs
 }
 
 func (m *Metrics) AddTaskDuration(duration time.Duration) {

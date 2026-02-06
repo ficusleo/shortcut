@@ -24,8 +24,7 @@ const (
 // first we recieve signal
 // then we send to exitCh
 // then by recieving from exitCh return from main
-// by returning from main we call defer cancel() which cancels context
-// then in daemon we listen for ctx.Done() and stop workers gracefully
+// by returning from main we call defered stop func which stops daemon and web api
 
 func main() {
 	ctx := context.Background()
@@ -33,9 +32,10 @@ func main() {
 	client := extapi.New()
 
 	logger := log.New()
+	logger.SetLevel(log.DebugLevel)
 
 	m := metrics.New()
-	d := daemon.New(numWorkers, queueSize, m, logger)
+	d := daemon.New(ctx, numWorkers, queueSize, m, logger)
 	d.Start(ctx, client)
 
 	c := make(chan os.Signal, 1)
@@ -59,10 +59,6 @@ func main() {
 		logger.Info("app exit")
 		return
 	}
-
-	go func() {
-
-	}()
 }
 
 func stop(d *daemon.Daemon, api *webapi.API) {

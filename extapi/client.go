@@ -19,7 +19,6 @@ func (e *CustomError) Error() string {
 }
 
 type ExternalAPIImplementation struct {
-	TaskID string
 }
 
 type Client struct {
@@ -32,11 +31,7 @@ func New() *Client {
 	}
 }
 
-func (c *Client) SetTaskID(taskID string) {
-	c.API.TaskID = taskID
-}
-
-func (c *Client) GetSomething(ctx context.Context, workerID int) error {
+func (c *Client) GetSomething(ctx context.Context, taskID string, workerID int) error {
 	startedAt := time.Now()
 	sleepDuration := time.Duration(1000+rand.Intn(10000)) * time.Millisecond
 	if rand.Intn(10) == 0 {
@@ -44,10 +39,10 @@ func (c *Client) GetSomething(ctx context.Context, workerID int) error {
 	}
 	select {
 	case <-ctx.Done():
-		log.WithFields(log.Fields{"workerId": workerID, "taskId": c.API.TaskID, "duration": time.Since(startedAt)}).Info("External API call cancelled")
+		log.WithFields(log.Fields{"workerId": workerID, "taskId": taskID, "duration": time.Since(startedAt)}).Info("External API call cancelled by context")
 		return ctx.Err()
 	case <-time.After(sleepDuration):
-		log.WithFields(log.Fields{"workerId": workerID, "taskId": c.API.TaskID, "duration": time.Since(startedAt)}).Info("External API call completed")
+		log.WithFields(log.Fields{"workerId": workerID, "taskId": taskID, "duration": time.Since(startedAt)}).Info("External API call completed")
 		return nil
 	}
 }
