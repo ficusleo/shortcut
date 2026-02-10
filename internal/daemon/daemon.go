@@ -12,11 +12,17 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"shortcut/extapi"
+	"shortcut/internal/database"
 	"shortcut/internal/metrics"
 )
 
 type ExternalAPICaller interface {
 	GetSomething(ctx context.Context, taskID string, workerID int) error
+}
+
+type PersistentQueue interface {
+	AddNotProcessedTask(taskID string)
+	GetAllNotProcessedTasks() []string
 }
 
 type Task struct {
@@ -34,20 +40,15 @@ type Daemon struct {
 	baseCtx     context.Context
 	numWorkers  int
 	taskCounter uint64
-	Metrics     *metrics.Metrics
+	Metrics     *metrics.Service
 	TaskQueue   chan *Task
 	Wg          *sync.WaitGroup
-
-	mu                     sync.Mutex
-	submittedTasks         map[string]int
-	activeTasks            map[string]int
-	notProcessedTasks      map[string]struct{}
-	notProcessedTasksCount int
+	Ch          PersistentQueue
 
 	workerCancel func()
 }
 
-func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Metrics, logger *log.Logger) *Daemon {
+func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Service, db *database.Service, logger *log.Logger) *Daemon {
 	return &Daemon{
 		logger:     logger,
 		Metrics:    m,
@@ -55,10 +56,7 @@ func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Metrics,
 		numWorkers: numWorkers,
 		Wg:         &sync.WaitGroup{},
 		baseCtx:    ctx,
-
-		submittedTasks:    make(map[string]int),
-		activeTasks:       make(map[string]int),
-		notProcessedTasks: make(map[string]struct{}),
+		Ch:         db,
 	}
 }
 
@@ -86,14 +84,15 @@ func (d *Daemon) Stop() {
 	select {
 	case <-doneCh:
 		// all active tasks finished processing
-	case <-time.After(10 * time.Second):
+	case <-time.After(10 * time.Minute):
 		d.logger.Info("force exit after timeout")
 	}
 
-	d.logger.Info("submitted tasks:", d.submittedTasks)
-	d.logger.Info("not processed tasks:", d.notProcessedTasks)
-	d.logger.Info("active tasks:", d.activeTasks)
-	d.logger.Info("not processed tasks count:", d.getNotProcessedTasksCount())
+	d.logger.Info("submitted tasks:", d.Metrics.Recorder.GetSubmittedTasksTotal())
+	d.logger.Info("unavailable service:", d.Metrics.Recorder.GetUnavailableTotal())
+	d.logger.Info("errors:", d.Metrics.Recorder.GetTaskErrorsTotal())
+	d.logger.Info("timeouts:", d.Metrics.Recorder.GetTimeoutsTotal())
+	d.logger.Info("active tasks:", d.Metrics.Recorder.GetActiveTasksTotal())
 	d.logger.Info("All workers have stopped")
 	d.logFinalMetrics()
 }
@@ -109,8 +108,7 @@ func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, worker
 				d.logger.WithFields(log.Fields{"workerId": workerID}).Info("task queue closed, worker exiting")
 				return
 			}
-			d.Metrics.SetActiveTaskID(task.ID, workerID)
-			d.addActiveTask(task.ID, workerID)
+			d.Metrics.Recorder.AddActiveTasks(1)
 			d.Wg.Add(1)
 			d.processingWithTimeout(d.baseCtx, apiCaller, workerID, task)
 		}
@@ -125,10 +123,8 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 	d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID}).Info("start processing")
 	startedAt := time.Now()
 	defer func() {
-		finishedAt := time.Since(startedAt)
-		d.Metrics.AddTaskDuration(finishedAt)
-		d.Metrics.UnsetActiveTaskID(task.ID)
-		d.removeActiveTask(task.ID)
+		d.Metrics.Recorder.ObserveTaskDuration(time.Since(startedAt))
+		d.Metrics.Recorder.DecActiveTasks(1)
 	}()
 
 	doneProcessing := make(chan struct{})
@@ -138,21 +134,15 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		if err != nil {
 			var customErr *extapi.CustomError
 			if errors.As(err, &customErr) {
-				atomic.AddUint64(&d.Metrics.TaskErrorsTotal, 1)
+				d.Metrics.Recorder.IncTaskError()
 			}
-			var timeoutErr = context.DeadlineExceeded
-			if errors.Is(err, timeoutErr) {
-				atomic.AddUint64(&d.Metrics.TimeoutsTotal, 1)
-			}
-			var cancelErr = context.Canceled
-			if errors.Is(err, cancelErr) {
-				atomic.AddUint64(&d.Metrics.TimeoutsTotal, 1)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				d.Metrics.Recorder.IncTaskTimeout()
 			}
 			errChan <- err
 			return
 		}
-		atomic.AddUint64(&d.Metrics.Submitted, 1)
-		d.addSubmittedTask(task.ID, workerID)
+		d.Metrics.Recorder.IncSubmittedTasksTotal()
 		close(doneProcessing)
 	}()
 
@@ -163,47 +153,18 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		return
 	}
 }
-
-func (d *Daemon) addActiveTask(taskID string, workerID int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.activeTasks[taskID] = workerID
-}
-
-func (d *Daemon) removeActiveTask(taskID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	delete(d.activeTasks, taskID)
-}
-
-func (d *Daemon) addNotProcessedTask(taskID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.notProcessedTasks[taskID] = struct{}{}
-}
-
 func (d *Daemon) moveNotProcessedTasksToPersistentQueue() {
 	for task := range d.TaskQueue {
-		d.addNotProcessedTask(task.ID)
+		d.Ch.AddNotProcessedTask(task.ID)
 	}
 }
 
-func (d *Daemon) addSubmittedTask(taskID string, workerID int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.submittedTasks[taskID] = workerID
-}
-
 func (d *Daemon) logFinalMetrics() {
-	formattedMetrics, err := json.MarshalIndent(d.Metrics.GetMetrics(), "", "  ")
+	metrics := d.Metrics.Recorder.GetMetrics()
+	metrics["not_processed_tasks"] = d.Ch.GetAllNotProcessedTasks()
+	formattedMetrics, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		d.logger.WithError(err).Error("Failed to format metrics")
 	}
 	d.logger.Info(string(formattedMetrics))
-}
-
-func (d *Daemon) getNotProcessedTasksCount() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.notProcessedTasks)
 }

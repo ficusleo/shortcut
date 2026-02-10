@@ -12,6 +12,7 @@ import (
 
 	"shortcut/extapi"
 	"shortcut/internal/daemon"
+	"shortcut/internal/database"
 	"shortcut/internal/metrics"
 	webapi "shortcut/internal/web-api"
 )
@@ -24,18 +25,24 @@ const (
 // first we recieve signal
 // then we send to exitCh
 // then by recieving from exitCh return from main
-// by returning from main we call defered stop func which stops daemon and web api
+// by returning from main we call defered stop func which stops services gracefully
 
 func main() {
 	ctx := context.Background()
 	exitCh := make(chan struct{}, 1)
+
 	client := extapi.New()
 
 	logger := log.New()
 	logger.SetLevel(log.DebugLevel)
 
-	m := metrics.New()
-	d := daemon.New(ctx, numWorkers, queueSize, m, logger)
+	m := metrics.New(&metrics.Config{
+		Addr:     ":8080",
+		Endpoint: "/metrics",
+	})
+
+	db := database.New(&database.Config{})
+	d := daemon.New(ctx, numWorkers, queueSize, m, db, logger)
 	d.Start(ctx, client)
 
 	c := make(chan os.Signal, 1)

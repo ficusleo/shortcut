@@ -13,7 +13,7 @@ import (
 
 type Handler struct {
 	daemon  *daemon.Daemon
-	metrics *metrics.Metrics
+	metrics *metrics.Service
 }
 
 type API struct {
@@ -26,7 +26,7 @@ func (h *Handler) WithDaemon(d *daemon.Daemon) *Handler {
 	return h
 }
 
-func (h *Handler) WithMetrics(m *metrics.Metrics) *Handler {
+func (h *Handler) WithMetrics(m *metrics.Service) *Handler {
 	h.metrics = m
 	return h
 }
@@ -47,18 +47,23 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	resp := h.metrics.GetMetrics()
+	resp := h.metrics.Recorder.GetMetrics()
+	resp["not_processed_tasks"] = h.daemon.Ch.GetAllNotProcessedTasks()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	formattedResponse, err := json.MarshalIndent(resp, "", "  ")
+	status := http.StatusAccepted
 	if err != nil {
-		http.Error(w, "Failed to format response", http.StatusInternalServerError)
+		status = http.StatusInternalServerError
+		h.metrics.Recorder.IncHTTPResponseStatus(status)
+		http.Error(w, "Failed to format response", status)
 		return
 	}
+	h.metrics.Recorder.IncHTTPResponseStatus(status)
 	w.Write(formattedResponse)
 }
 
-func New(d *daemon.Daemon, m *metrics.Metrics, logger *log.Logger) *API {
+func New(d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
 	h := &Handler{}
 	h.WithDaemon(d).WithMetrics(m)
 

@@ -1,88 +1,224 @@
 package metrics
 
 import (
-	"sync"
-	"sync/atomic"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	_ "net/http/pprof"
 )
 
-type MetricsResponse struct {
-	TasksSubmitted    uint64
-	TaskMeanDuration  string
-	ActiveTaskIDs     map[string]int
-	TaskErrorsTotal   uint64
-	TaskTimeoutsTotal uint64
+const (
+	statusCodeLabel = "code"
+	methodLabel     = "method"
+	errorLabel      = "error"
+)
+
+type RecorderConfig struct {
+	Prefix          string    `mapstructure:"prefix"`
+	DurationBuckets []float64 `mapstructure:"duration_buckets"`
+	SizeBuckets     []float64 `mapstructure:"size_buckets"`
 }
 
-type Metrics struct {
-	Mux             *sync.RWMutex
-	TaskErrorsTotal uint64
-	TimeoutsTotal   uint64
-	ActiveTaskIDs   map[string]int
-	TaskDurations   []time.Duration
-	Submitted       uint64
+// Recorder contains prometheus metrics used in app
+type Recorder struct {
+	conf *RecorderConfig
+
+	statusCounter *prometheus.CounterVec // 200, 503
+	errorCounter  *prometheus.CounterVec //timeouts, common errors
+
+	taskDuration prometheus.Histogram
+
+	memUsed              prometheus.Gauge
+	activeTasks          prometheus.Gauge
+	httpRequestsInflight prometheus.Gauge
 }
 
-func New() *Metrics {
-	return &Metrics{
-		Mux:           &sync.RWMutex{},
-		ActiveTaskIDs: make(map[string]int),
-		TaskDurations: make([]time.Duration, 0),
+// NewRecorder returns a new metrics recorder that implements the recorder
+// using Prometheus as the backend.
+func NewRecorder() *Recorder {
+	conf := &RecorderConfig{
+		DurationBuckets: prometheus.DefBuckets,
+		SizeBuckets:     prometheus.ExponentialBuckets(100, 10, 8),
+	}
+
+	r := &Recorder{
+		conf: conf,
+
+		statusCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "http",
+			Name:      "requests_accepted_total",
+			Help:      "The total number of accepted HTTP requests.",
+		}, []string{statusCodeLabel}),
+
+		errorCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "task",
+			Name:      "errors_total",
+			Help:      "The total number of task errors.",
+		}, []string{errorLabel}),
+
+		taskDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "task",
+			Name:      "duration_seconds",
+			Help:      "The duration of task processing in seconds.",
+			Buckets:   conf.DurationBuckets,
+		}),
+
+		memUsed: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "http",
+			Name:      "mem_used_bytes",
+			Help:      "The number of bytes of memory used.",
+		}),
+		activeTasks: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "task",
+			Name:      "active_tasks",
+			Help:      "The number of active tasks being processed at the same time.",
+		}),
+		httpRequestsInflight: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "http",
+			Name:      "requests_inflight",
+			Help:      "The number of inflight requests being handled at the same time.",
+		}),
+	}
+
+	return r
+}
+
+func (r *Recorder) GetMetrics() map[string]any {
+	metrics := make(map[string]any)
+	metrics["mem_used_bytes"] = r.GetMemUsed()
+	metrics["active_tasks"] = r.GetActiveTasksTotal()
+	metrics["unavailable_total"] = r.GetUnavailableTotal()
+	metrics["submitted_tasks_total"] = r.GetSubmittedTasksTotal()
+	metrics["task_errors_total"] = r.GetTaskErrorsTotal()
+	metrics["timeouts_total"] = r.GetTimeoutsTotal()
+	return metrics
+}
+
+func (r *Recorder) GetMemUsed() float64 {
+	metric := &dto.Metric{}
+	if err := r.memUsed.Write(metric); err != nil {
+		return 0
+	}
+	return metric.GetGauge().GetValue()
+}
+
+func (r *Recorder) GetActiveTasksTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.activeTasks.Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetGauge().GetValue())
+}
+
+func (r *Recorder) GetUnavailableTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.statusCounter.WithLabelValues("503").Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetCounter().GetValue())
+}
+
+func (r *Recorder) GetSubmittedTasksTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.statusCounter.WithLabelValues("200").Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetCounter().GetValue())
+}
+
+func (r *Recorder) GetTaskErrorsTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.errorCounter.WithLabelValues("error").Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetCounter().GetValue())
+}
+
+func (r *Recorder) GetTimeoutsTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.errorCounter.WithLabelValues("timeout").Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetCounter().GetValue())
+}
+
+func (r *Recorder) IncHTTPResponseStatus(statusCode int) {
+	r.statusCounter.WithLabelValues(strconv.Itoa(statusCode)).Inc()
+}
+
+func (r *Recorder) IncSubmittedTasksTotal() {
+	r.statusCounter.WithLabelValues("200").Inc()
+}
+
+func (r *Recorder) IncTaskError() {
+	r.errorCounter.WithLabelValues("error").Inc()
+}
+
+func (r *Recorder) IncTaskTimeout() {
+	r.errorCounter.WithLabelValues("timeout").Inc()
+}
+
+func (r *Recorder) AddActiveTasks(count float64) {
+	r.activeTasks.Add(float64(count))
+}
+
+func (r *Recorder) DecActiveTasks(count float64) {
+	r.activeTasks.Sub(count)
+}
+
+// ObserveTaskDuration updates httpRequestDurHistogram metric with passed request
+func (r *Recorder) ObserveTaskDuration(duration time.Duration) {
+	r.taskDuration.
+		Observe(duration.Seconds())
+}
+
+// AddInflightRequests updates httpRequestsInflight metric with passed request
+func (r *Recorder) AddInflightRequests(quantity int) {
+	r.httpRequestsInflight.Add(float64(quantity))
+}
+
+// Service struct
+type Service struct {
+	API      *API
+	Recorder *Recorder
+}
+
+// New constructor
+func New(conf *Config) *Service {
+	return &Service{
+		API:      newAPI(conf),
+		Recorder: NewRecorder(),
 	}
 }
 
-func (m *Metrics) GetMetrics() *MetricsResponse {
-	count := atomic.LoadUint64(&m.Submitted)
-	return &MetricsResponse{
-		TasksSubmitted:    count,
-		TaskMeanDuration:  m.GetTaskMeanDuration(),
-		ActiveTaskIDs:     m.GetActiveTaskIDs(),
-		TaskErrorsTotal:   m.GetTaskErrorsTotal(),
-		TaskTimeoutsTotal: m.GetTaskTimeoutsTotal(),
+// RegisterMetrics wrapper
+func (s *Service) RegisterMetrics() error {
+	if err := s.Recorder.RegisterMetrics(); err != nil {
+		return err
 	}
+	return nil
 }
 
-func (m *Metrics) SetActiveTaskID(taskID string, workerID int) {
-	m.Mux.Lock()
-	defer m.Mux.Unlock()
-	m.ActiveTaskIDs[taskID] = workerID
-}
-
-func (m *Metrics) UnsetActiveTaskID(taskID string) {
-	m.Mux.Lock()
-	defer m.Mux.Unlock()
-	delete(m.ActiveTaskIDs, taskID)
-}
-
-func (m *Metrics) GetTaskErrorsTotal() uint64 {
-	return atomic.LoadUint64(&m.TaskErrorsTotal)
-}
-
-func (m *Metrics) GetTaskTimeoutsTotal() uint64 {
-	return atomic.LoadUint64(&m.TimeoutsTotal)
-}
-
-func (m *Metrics) GetActiveTaskIDs() map[string]int {
-	return m.ActiveTaskIDs
-}
-
-func (m *Metrics) AddTaskDuration(duration time.Duration) {
-	m.Mux.Lock()
-	defer m.Mux.Unlock()
-	m.TaskDurations = append(m.TaskDurations, duration)
-}
-
-func (m *Metrics) GetTaskMeanDuration() string {
-	if len(m.TaskDurations) == 0 {
-		return "0s"
+// RegisterMetrics registers needed metrics with default prometheus registerer
+func (r *Recorder) RegisterMetrics() error {
+	metricsToRegister := []prometheus.Collector{
+		r.activeTasks, r.errorCounter, r.taskDuration, r.memUsed, r.httpRequestsInflight, r.statusCounter,
 	}
-	m.Mux.RLock()
-	defer m.Mux.RUnlock()
-	var total uint64
-	for _, d := range m.TaskDurations {
-		total += uint64(d)
+
+	for _, metric := range metricsToRegister {
+		if err := prometheus.DefaultRegisterer.Register(metric); err != nil {
+			return err
+		}
 	}
-	return time.Duration(float64(total) / float64(len(m.TaskDurations))).String()
+
+	return nil
 }
