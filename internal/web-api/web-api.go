@@ -48,7 +48,7 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	resp := h.metrics.Recorder.GetMetrics()
-	resp["not_processed_tasks"] = h.daemon.Ch.GetAllNotProcessedTasks()
+	resp["not_processed_tasks_count"] = uint64(len(h.daemon.Ch.GetAllNotProcessedTasks()))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	formattedResponse, err := json.MarshalIndent(resp, "", "  ")

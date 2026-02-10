@@ -161,6 +161,7 @@ func (d *Daemon) moveNotProcessedTasksToPersistentQueue() {
 
 func (d *Daemon) logFinalMetrics() {
 	metrics := d.Metrics.Recorder.GetMetrics()
+	metrics["not_processed_tasks_count"] = uint64(len(d.Ch.GetAllNotProcessedTasks()))
 	metrics["not_processed_tasks"] = d.Ch.GetAllNotProcessedTasks()
 	formattedMetrics, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
