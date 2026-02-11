@@ -12,7 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"shortcut/extapi"
-	"shortcut/internal/database"
 	"shortcut/internal/metrics"
 )
 
@@ -48,7 +47,7 @@ type Daemon struct {
 	workerCancel func()
 }
 
-func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Service, db *database.Service, logger *log.Logger) *Daemon {
+func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Service, db PersistentQueue, logger *log.Logger) *Daemon {
 	return &Daemon{
 		logger:     logger,
 		Metrics:    m,

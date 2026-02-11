@@ -200,10 +200,21 @@ func New(conf *Config) *Service {
 	}
 }
 
-// RegisterMetrics wrapper
-func (s *Service) RegisterMetrics() error {
+// Start registers metrics and starts the metrics HTTP API.
+func (s *Service) Start() error {
 	if err := s.Recorder.RegisterMetrics(); err != nil {
 		return err
+	}
+	if s.API != nil {
+		s.API.Start()
+	}
+	return nil
+}
+
+// Stop stops the metrics HTTP API.
+func (s *Service) Stop() error {
+	if s.API != nil {
+		return s.API.Stop()
 	}
 	return nil
 }
