@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -201,20 +203,21 @@ func New(conf *Config) *Service {
 }
 
 // Start registers metrics and starts the metrics HTTP API.
-func (s *Service) Start() error {
+func (s *Service) Start(errCh chan error) error {
 	if err := s.Recorder.RegisterMetrics(); err != nil {
 		return err
 	}
-	if s.API != nil {
-		s.API.Start()
+	if s.API == nil {
+		return errors.New("metrics API not initialized")
 	}
+	s.API.Start(errCh)
 	return nil
 }
 
 // Stop stops the metrics HTTP API.
-func (s *Service) Stop() error {
+func (s *Service) Stop(ctx context.Context) error {
 	if s.API != nil {
-		return s.API.Stop()
+		return s.API.Stop(ctx)
 	}
 	return nil
 }

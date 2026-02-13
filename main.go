@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/dig"
@@ -25,19 +26,21 @@ const (
 func main() {
 	container := dig.New()
 
-	// container.Provide(ProvideBaseContext)
+	container.Provide(ProvideErrorsChan)
+	container.Provide(ProvideBaseContext)
 	container.Provide(ProvideClickhouse)
 	container.Provide(ProvideLogger)
 	container.Provide(ProvideMetrics)
 	container.Provide(ProvideDaemon)
 	container.Provide(ProvideWebAPI)
 
-	if err := container.Invoke(func(m *metrics.Service, d *daemon.Daemon, api *webapi.API, ch *clickhouse.Service) {
-		defer stop(d, api, m)
-		ctx := context.Background()
+	if err := container.Invoke(func(ctx context.Context, m *metrics.Service, d *daemon.Daemon, api *webapi.API, ch *clickhouse.Service) {
+		defer stop(ctx, d, api, m)
 
-		m.Start()
-		ch.Start(ctx)
+		errCh := make(chan error, 1)
+
+		m.Start(errCh)
+		ch.Start()
 		d.Start(ctx, extapi.New())
 		api.Start()
 
@@ -60,23 +63,29 @@ func main() {
 
 }
 
-func stop(d *daemon.Daemon, api *webapi.API, m *metrics.Service) {
-	api.Stop()
+func stop(ctx context.Context, d *daemon.Daemon, api *webapi.API, m *metrics.Service) {
+	api.Stop(ctx)
 	d.Stop()
-	m.Stop()
+	m.Stop(ctx)
 }
 
 func ProvideBaseContext() context.Context {
 	return context.Background()
 }
 
-func ProvideClickhouse(m *metrics.Service) (*clickhouse.Service, error) {
+func ProvideErrorsChan() chan error {
+	return make(chan error, 1)
+}
+
+func ProvideClickhouse(ctx context.Context, m *metrics.Service, errCh chan error) (*clickhouse.Service, error) {
 	// TODO: move to viper config initialization
 	chConf := &clickhouse.Config{
-		DSN:        "http://localhost:8123",
+		DSN:        "localhost:8123",
 		NumRetries: 3,
+		Timeout:    5 * time.Second,
+		UseTLS:     false,
 	}
-	return clickhouse.NewService(chConf, m)
+	return clickhouse.NewService(ctx, chConf, m, errCh)
 }
 
 func ProvideLogger(ch *clickhouse.Service) *log.Logger {
@@ -93,9 +102,6 @@ func ProvideMetrics() *metrics.Service {
 		Addr:     ":9090",
 		Endpoint: "/metrics",
 	})
-	if err := svc.Start(); err != nil {
-		log.Fatalf("failed to start metrics service: %v", err)
-	}
 	return svc
 }
 

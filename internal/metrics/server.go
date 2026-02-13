@@ -40,15 +40,15 @@ func newAPI(conf *Config) *API {
 }
 
 // Start launches the metrics HTTP server in a goroutine.
-func (a *API) Start() {
+func (a *API) Start(errCh chan error) {
 	go func() {
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			// server error; nothing to do here as caller may log
+		if err := a.server.ListenAndServe(); err != nil {
+			errCh <- err
 		}
 	}()
 }
 
 // Stop gracefully shuts down the metrics server.
-func (a *API) Stop() error {
-	return a.server.Shutdown(context.Background())
+func (a *API) Stop(ctx context.Context) error {
+	return a.server.Shutdown(ctx)
 }

@@ -61,10 +61,11 @@ func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Service,
 
 func (d *Daemon) Start(ctx context.Context, apiCaller ExternalAPICaller) {
 	d.baseCtx = ctx
-	ctx, d.workerCancel = context.WithCancel(ctx)
+	workerCtx, cancel := context.WithCancel(ctx)
+	d.workerCancel = cancel
 	for i := range d.numWorkers {
 		id := i + 1
-		go d.worker(ctx, apiCaller, id)
+		go d.worker(workerCtx, apiCaller, id)
 	}
 }
 
@@ -72,7 +73,7 @@ func (d *Daemon) Stop() {
 	d.workerCancel()
 
 	close(d.TaskQueue)
-	d.moveNotProcessedTasksToPersistentQueue()
+	d.moveNotProcessedTasksToPersistentQueue(d.baseCtx)
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -116,7 +117,7 @@ func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, worker
 
 func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAPICaller, workerID int, task *Task) {
 	defer d.Wg.Done()
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(3)*time.Second)
+	processingCtx, cancel := context.WithTimeout(ctx, time.Duration(3)*time.Second)
 	defer cancel()
 
 	d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID}).Info("start processing")
@@ -129,7 +130,7 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 	doneProcessing := make(chan struct{})
 	errChan := make(chan error, 1)
 	go func() {
-		err := apiCaller.GetSomething(ctx, task.ID, workerID)
+		err := apiCaller.GetSomething(processingCtx, task.ID, workerID)
 		if err != nil {
 			var customErr *extapi.CustomError
 			if errors.As(err, &customErr) {
@@ -152,7 +153,7 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		return
 	}
 }
-func (d *Daemon) moveNotProcessedTasksToPersistentQueue() {
+func (d *Daemon) moveNotProcessedTasksToPersistentQueue(ctx context.Context) {
 	for task := range d.TaskQueue {
 		d.Ch.AddNotProcessedTask(task.ID)
 	}

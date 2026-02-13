@@ -3,15 +3,12 @@ package clickhouse
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"strings"
 	"sync"
 	"time"
+
+	ch "github.com/ClickHouse/clickhouse-go/v2"
 
 	"shortcut/internal/metrics"
 )
@@ -19,64 +16,93 @@ import (
 type Config struct {
 	DSN        string
 	NumRetries int
+	Timeout    time.Duration
+	UseTLS     bool
 }
 
 type Client struct {
-	conf       *Config
-	httpClient *http.Client
+	conf *Config
+	conn ch.Conn
+	ctx  context.Context
+}
 
-	logsPath    string
-	metricsPath string
-	baseURL     string
+func NewClient(ctx context.Context, conf *Config) (*Client, error) {
+	var tlsConfig *tls.Config
+	if conf.UseTLS {
+		tlsConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	c, err := ch.Open(&ch.Options{
+		Protocol: ch.HTTP,
+		TLS:      tlsConfig,
+		Addr:     []string{conf.DSN},
+		Auth: ch.Auth{
+			Database: "default",
+			Username: "default",
+			Password: "",
+		},
+		DialTimeout: conf.Timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Client{
+		conf: conf,
+		conn: c,
+		ctx:  ctx,
+	}, nil
 }
 
 type Service struct {
 	Client     *Client
 	metricsSrv *metrics.Service
-	ErrCh      chan error
 	mux        *sync.Mutex
 	storage    map[string]struct{}
+	ErrCh      chan error
 }
 
-func NewService(conf *Config, m *metrics.Service) (*Service, error) {
-	c, err := NewClient(conf)
+func NewService(ctx context.Context, conf *Config, m *metrics.Service, errCh chan error) (*Service, error) {
+	c, err := NewClient(ctx, conf)
 	if err != nil {
+		return nil, err
+	}
+	// ensure ClickHouse tables exist when running against HTTP ClickHouse
+	if err := c.ensureTables(); err != nil {
 		return nil, err
 	}
 	return &Service{
 		Client:     c,
 		metricsSrv: m,
-		ErrCh:      make(chan error, 1),
 		mux:        &sync.Mutex{},
 		storage:    make(map[string]struct{}),
+		ErrCh:      errCh,
 	}, nil
 }
 
-func NewClient(conf *Config) (*Client, error) {
-	c := &Client{conf: conf}
-	// try to parse DSN as URL for HTTP ClickHouse
-	// expected form: http(s)://host:8123[/]?param=val
-	u, err := url.Parse(conf.DSN)
-	if err != nil {
-		// if DSN is not a valid URL, treat it as a file path for local JSON output
-		c.logsPath = conf.DSN + "_logs.jsonl"
-		c.metricsPath = conf.DSN + "_metrics.jsonl"
-		return nil, err
+func (c *Client) ensureTables() error {
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+
+	ddls := []string{
+		`CREATE TABLE IF NOT EXISTS logs (ts DateTime64(9), val String) ENGINE = MergeTree() ORDER BY ts`,
+		`CREATE TABLE IF NOT EXISTS metrics (ts DateTime64(9), val String) ENGINE = MergeTree() ORDER BY ts`,
 	}
-	base := *u
-	base.RawQuery = ""
-	c.baseURL = strings.TrimRight(base.String(), "/")
-	c.httpClient = &http.Client{Timeout: 10 * time.Second}
-	return c, nil
+	for _, ddl := range ddls {
+		if err := c.conn.Exec(ctx, ddl); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func (s *Service) Start(ctx context.Context) {
+func (s *Service) Start() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-s.Client.ctx.Done():
 				return
 			case <-ticker.C:
 				if s.metricsSrv != nil {
@@ -91,59 +117,12 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-func (c *Client) writeJSONLine(path string, v any) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	// include timestamp
-	line := map[string]any{
-		"ts":  time.Now().UTC().Format(time.RFC3339Nano),
-		"val": json.RawMessage(b),
-	}
-	out, err := json.Marshal(line)
-	if err != nil {
-		return err
-	}
-	out = append(out, '\n')
-	_, err = f.Write(out)
-	return err
-}
-
 func (c *Client) WriteLog(entry map[string]any) error {
-	if c.httpClient == nil {
-		if c.logsPath == "" {
-			return nil
-		}
-		return c.writeJSONLine(c.logsPath, entry)
-	}
-
-	// real ClickHouse via HTTP interface using JSONEachRow
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	return c.postWithRetries("logs", b)
+	return c.postWithRetries(c.ctx, "logs", entry)
 }
 
 func (c *Client) WriteMetrics(metrics map[string]any) error {
-	if c.httpClient == nil {
-		if c.metricsPath == "" {
-			return nil
-		}
-		return c.writeJSONLine(c.metricsPath, metrics)
-	}
-	b, err := json.Marshal(metrics)
-	if err != nil {
-		return err
-	}
-	return c.postWithRetries("metrics", b)
+	return c.postWithRetries(c.ctx, "metrics", metrics)
 }
 
 func (s *Service) AddNotProcessedTask(taskID string) {
@@ -180,40 +159,30 @@ func (s *Service) GetAllNotProcessedTasks() []string {
 	return tasks
 }
 
-func (c *Client) postWithRetries(table string, jsonRow []byte) error {
-	query := "INSERT INTO " + table + " FORMAT JSONEachRow"
-	u := c.baseURL + "/?query=" + url.QueryEscape(query)
-
-	body := jsonRow
-	if len(body) == 0 || body[len(body)-1] != '\n' {
-		body = append(body, '\n')
+func (c *Client) postWithRetries(ctx context.Context, table string, data map[string]any) error {
+	query := "INSERT INTO " + table + " (ts, val) VALUES (?, ?)"
+	b, err := json.Marshal(data)
+	if err != nil {
+		return err
 	}
-
-	var lastErr error
-	for i := range c.conf.NumRetries {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
-		if err != nil {
-			cancel()
-			lastErr = err
-			time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
+	req := &LogRequest{
+		TS:  time.Now(),
+		Val: bytes.NewBuffer(b).String(),
+	}
+	for i := 0; i < c.conf.NumRetries; i++ {
+		if err := c.conn.Exec(ctx, query, req.TS, req.Val); err != nil {
+			if i == c.conf.NumRetries-1 {
+				return err
+			}
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := c.httpClient.Do(req)
-		cancel()
-		if err != nil {
-			lastErr = err
-			time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
-			continue
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
-		}
-		lastErr = fmt.Errorf("clickhouse http status %d", resp.StatusCode)
-		time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
+		return nil
 	}
-	return lastErr
+	return nil
+}
+
+type LogRequest struct {
+	TS  time.Time `db:"ts"`
+	Val string    `db:"val"`
 }
