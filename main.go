@@ -78,9 +78,12 @@ func ProvideErrorsChan() chan error {
 }
 
 func ProvideClickhouse(ctx context.Context, m *metrics.Service, errCh chan error) (*clickhouse.Service, error) {
-	// TODO: move to viper config initialization
+	dsn := os.Getenv("CLICKHOUSE_DSN")
+	if dsn == "" {
+		dsn = "localhost:8123"
+	}
 	chConf := &clickhouse.Config{
-		DSN:        "localhost:8123",
+		DSN:        dsn,
 		NumRetries: 3,
 		Timeout:    5 * time.Second,
 		UseTLS:     false,
