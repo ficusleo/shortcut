@@ -134,6 +134,7 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		if err != nil {
 			var customErr *extapi.CustomError
 			if errors.As(err, &customErr) {
+				d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID, "error": customErr.Msg}).Error("External API error")
 				d.Metrics.Recorder.IncTaskError()
 			}
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {

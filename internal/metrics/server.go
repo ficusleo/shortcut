@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -30,7 +31,7 @@ func newAPI(conf *Config) *API {
 	server := &http.Server{
 		Addr:              conf.Addr,
 		Handler:           routes,
-		ReadHeaderTimeout: 0,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	return &API{

@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	log "github.com/sirupsen/logrus"
 
 	_ "net/http/pprof"
 )
@@ -17,6 +18,13 @@ const (
 	methodLabel     = "method"
 	errorLabel      = "error"
 )
+
+// Service struct
+type Service struct {
+	API      *API
+	Recorder *Recorder
+	logger   *log.Logger
+}
 
 type RecorderConfig struct {
 	Prefix          string    `mapstructure:"prefix"`
@@ -36,6 +44,36 @@ type Recorder struct {
 	memUsed              prometheus.Gauge
 	activeTasks          prometheus.Gauge
 	httpRequestsInflight prometheus.Gauge
+}
+
+// New constructor
+func New(conf *Config, ) *Service {
+	return &Service{
+		API:      newAPI(conf),
+		Recorder: NewRecorder(),
+	}
+}
+
+// Start registers metrics and starts the metrics HTTP API.
+func (s *Service) Start(errCh chan error) error {
+	if err := s.Recorder.RegisterMetrics(); err != nil {
+		return err
+	}
+	if s.API == nil {
+		log.Error("metrics API not initialized")
+		return errors.New("metrics API not initialized")
+	}
+	log.WithField("addr", s.API.conf.Addr).Info("Starting metrics API")
+	s.API.Start(errCh)
+	return nil
+}
+
+// Stop stops the metrics HTTP API.
+func (s *Service) Stop(ctx context.Context) error {
+	if s.API != nil {
+		return s.API.Stop(ctx)
+	}
+	return nil
 }
 
 // NewRecorder returns a new metrics recorder that implements the recorder
@@ -186,40 +224,6 @@ func (r *Recorder) ObserveTaskDuration(duration time.Duration) {
 // AddInflightRequests updates httpRequestsInflight metric with passed request
 func (r *Recorder) AddInflightRequests(quantity int) {
 	r.httpRequestsInflight.Add(float64(quantity))
-}
-
-// Service struct
-type Service struct {
-	API      *API
-	Recorder *Recorder
-}
-
-// New constructor
-func New(conf *Config) *Service {
-	return &Service{
-		API:      newAPI(conf),
-		Recorder: NewRecorder(),
-	}
-}
-
-// Start registers metrics and starts the metrics HTTP API.
-func (s *Service) Start(errCh chan error) error {
-	if err := s.Recorder.RegisterMetrics(); err != nil {
-		return err
-	}
-	if s.API == nil {
-		return errors.New("metrics API not initialized")
-	}
-	s.API.Start(errCh)
-	return nil
-}
-
-// Stop stops the metrics HTTP API.
-func (s *Service) Stop(ctx context.Context) error {
-	if s.API != nil {
-		return s.API.Stop(ctx)
-	}
-	return nil
 }
 
 // RegisterMetrics registers needed metrics with default prometheus registerer
