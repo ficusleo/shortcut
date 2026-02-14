@@ -7,5 +7,7 @@ clickhouse:
   num_retries: 3
   timeout: 10s # golang time format
   use_tls: false
+  user: "default"
+  password: ""
 web_api:
   addr: :8080

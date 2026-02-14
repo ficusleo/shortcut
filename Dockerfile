@@ -16,6 +16,7 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat file
 
 COPY --from=builder /go/bin/app /bin/app
+COPY config.yml /app/config.yml
 
 EXPOSE 8080
 EXPOSE 9090

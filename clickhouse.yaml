@@ -51,7 +51,7 @@ spec:
         - name: CLICKHOUSE_USER
           value: "default"
         - name: CLICKHOUSE_PASSWORD
-          value: ""
+          value: "password123"
         volumeMounts:
         - name: clickhouse-data
           mountPath: /var/lib/clickhouse

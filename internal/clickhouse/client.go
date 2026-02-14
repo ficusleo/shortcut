@@ -15,6 +15,8 @@ import (
 
 type Config struct {
 	DSN        string        `mapstructure:"dsn"`
+	User       string        `mapstructure:"user"`
+	Password   string        `mapstructure:"password"`
 	NumRetries int           `mapstructure:"num_retries"`
 	Timeout    time.Duration `mapstructure:"timeout"`
 	UseTLS     bool          `mapstructure:"use_tls"`
@@ -32,14 +34,19 @@ func NewClient(ctx context.Context, conf *Config) (*Client, error) {
 		tlsConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
+	user := conf.User
+	if user == "" {
+		user = "default"
+	}
+
 	c, err := ch.Open(&ch.Options{
 		Protocol: ch.HTTP,
 		TLS:      tlsConfig,
 		Addr:     []string{conf.DSN},
 		Auth: ch.Auth{
 			Database: "default",
-			Username: "default",
-			Password: "",
+			Username: user,
+			Password: conf.Password,
 		},
 		DialTimeout: conf.Timeout,
 	})

@@ -6,11 +6,11 @@ metadata:
 apiVersion: v1
 kind: Service
 metadata:
-  name: shortcut-app
+  name: shortcut-app-service
   namespace: shortcut
 spec:
   selector:
-    app: shortcut-app
+    app: shortcut-app-service
   ports:
     - name: http
       port: 8080
@@ -23,24 +23,32 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: shortcut-app
+  name: shortcut-app-service
   namespace: shortcut
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: shortcut-app
+      app: shortcut-app-service
   template:
     metadata:
       labels:
-        app: shortcut-app
+        app: shortcut-app-service
     spec:
       containers:
         - name: app
-          image: shortcut_app:v1
+          image: shortcut_app:v3
           ports:
             - containerPort: 8080
             - containerPort: 9090
           env:
             - name: CLICKHOUSE_DSN
               value: "clickhouse.monitoring.svc.cluster.local:8123"
+            - name: CLICKHOUSE_USER
+              value: "default"
+            - name: CLICKHOUSE_PASSWORD
+              value: "password123"
+            - name: METRICS_ADDR
+              value: ":9090"
+            - name: WEB_API_ADDR
+              value: ":8080"
