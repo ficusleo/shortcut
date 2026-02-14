@@ -104,9 +104,9 @@ func (c *Client) ensureTables() error {
 }
 
 func (s *Service) Start() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
 	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-s.Client.ctx.Done():
