@@ -1,13 +1,8 @@
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: monitoring
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-server-conf
-  namespace: monitoring
+  namespace: shortcut
 data:
   prometheus.yml: |
     global:
@@ -26,7 +21,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: prometheus-service
-  namespace: monitoring
+  namespace: shortcut
 spec:
   selector:
     app: prometheus-server
@@ -41,7 +36,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prometheus-server
-  namespace: monitoring
+  namespace: shortcut
 spec:
   replicas: 1
   selector:

@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: clickhouse
+  name: shortcut
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: clickhouse
-  namespace: monitoring
+  namespace: shortcut
 spec:
   type: NodePort
   ports:
@@ -22,11 +22,16 @@ spec:
   selector:
     app: clickhouse
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shortcut
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: clickhouse
-  namespace: monitoring
+  namespace: shortcut
 spec:
   replicas: 1
   selector:

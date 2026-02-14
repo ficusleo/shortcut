@@ -1,6 +1,6 @@
 ---
 metrics:
-  addr: localhost:8090
+  addr: localhost:9090
   endpoint: /metrics
 clickhouse:
   dsn: "localhost:8123"
@@ -8,6 +8,6 @@ clickhouse:
   timeout: 10s # golang time format
   use_tls: false
   user: "default"
-  password: ""
+  password: "password123"
 web_api:
   addr: :8080

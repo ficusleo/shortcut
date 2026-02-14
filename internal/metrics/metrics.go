@@ -169,7 +169,7 @@ func (r *Recorder) GetUnavailableTotal() uint64 {
 
 func (r *Recorder) GetSubmittedTasksTotal() uint64 {
 	metric := &dto.Metric{}
-	if err := r.statusCounter.WithLabelValues("200").Write(metric); err != nil {
+	if err := r.statusCounter.WithLabelValues("202").Write(metric); err != nil {
 		return 0
 	}
 	return uint64(metric.GetCounter().GetValue())
@@ -196,7 +196,7 @@ func (r *Recorder) IncHTTPResponseStatus(statusCode int) {
 }
 
 func (r *Recorder) IncSubmittedTasksTotal() {
-	r.statusCounter.WithLabelValues("200").Inc()
+	r.statusCounter.WithLabelValues("202").Inc()
 }
 
 func (r *Recorder) IncTaskError() {
