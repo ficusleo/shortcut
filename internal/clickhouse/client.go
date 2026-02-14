@@ -14,10 +14,10 @@ import (
 )
 
 type Config struct {
-	DSN        string
-	NumRetries int
-	Timeout    time.Duration
-	UseTLS     bool
+	DSN        string        `mapstructure:"dsn"`
+	NumRetries int           `mapstructure:"num_retries"`
+	Timeout    time.Duration `mapstructure:"timeout"`
+	UseTLS     bool          `mapstructure:"use_tls"`
 }
 
 type Client struct {

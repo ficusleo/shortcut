@@ -11,6 +11,10 @@ import (
 	"shortcut/internal/metrics"
 )
 
+type Config struct {
+	Addr string `mapstructure:"addr"`
+}
+
 type Handler struct {
 	daemon  *daemon.Daemon
 	metrics *metrics.Service
@@ -63,7 +67,7 @@ func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(formattedResponse)
 }
 
-func New(d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
+func New(conf *Config, d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
 	h := &Handler{}
 	h.WithDaemon(d).WithMetrics(m)
 
@@ -72,7 +76,7 @@ func New(d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
 	mux.HandleFunc("/metrics", h.MetricsHandler)
 
 	server := &http.Server{
-		Addr:    ":8080",
+		Addr:    conf.Addr,
 		Handler: mux,
 	}
 
@@ -83,7 +87,7 @@ func New(d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
 }
 
 func (api *API) Start() {
-	api.logger.Info("Server started on :8080")
+	api.logger.Infof("Server started on %s", api.server.Addr)
 	api.logger.Info("Try: hey -n 15000 -c 100 http://localhost:8080/submit")
 	go func() {
 		err := api.server.ListenAndServe()

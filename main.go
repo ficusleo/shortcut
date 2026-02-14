@@ -6,13 +6,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/dig"
 
 	"shortcut/extapi"
 	"shortcut/internal/clickhouse"
+	"shortcut/internal/config"
 	"shortcut/internal/daemon"
 	"shortcut/internal/metrics"
 	webapi "shortcut/internal/web-api"
@@ -26,6 +26,7 @@ const (
 func main() {
 	container := dig.New()
 
+	container.Provide(ProvideConfig)
 	container.Provide(ProvideErrorsChan)
 	container.Provide(ProvideBaseContext)
 	container.Provide(ProvideClickhouse)
@@ -34,12 +35,9 @@ func main() {
 	container.Provide(ProvideDaemon)
 	container.Provide(ProvideWebAPI)
 
-	if err := container.Invoke(func(ctx context.Context, m *metrics.Service, d *daemon.Daemon, api *webapi.API, ch *clickhouse.Service) {
+	if err := container.Invoke(func(ctx context.Context, conf *config.AppConfig, m *metrics.Service, d *daemon.Daemon, api *webapi.API, ch *clickhouse.Service) {
 		defer stop(ctx, d, api, m)
 
-		errCh := make(chan error, 1)
-
-		m.Start(errCh)
 		ch.Start()
 		d.Start(ctx, extapi.New())
 		api.Start()
@@ -73,22 +71,20 @@ func ProvideBaseContext() context.Context {
 	return context.Background()
 }
 
+func ProvideConfig() *config.AppConfig {
+	conf, err := config.GetConf()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	return conf
+}
+
 func ProvideErrorsChan() chan error {
 	return make(chan error, 1)
 }
 
-func ProvideClickhouse(ctx context.Context, m *metrics.Service, errCh chan error) (*clickhouse.Service, error) {
-	dsn := os.Getenv("CLICKHOUSE_DSN")
-	if dsn == "" {
-		dsn = "localhost:8123"
-	}
-	chConf := &clickhouse.Config{
-		DSN:        dsn,
-		NumRetries: 3,
-		Timeout:    5 * time.Second,
-		UseTLS:     false,
-	}
-	return clickhouse.NewService(ctx, chConf, m, errCh)
+func ProvideClickhouse(ctx context.Context, conf *config.AppConfig, m *metrics.Service, errCh chan error) (*clickhouse.Service, error) {
+	return clickhouse.NewService(ctx, conf.CHConf, m, errCh)
 }
 
 func ProvideLogger(ch *clickhouse.Service) *log.Logger {
@@ -99,12 +95,10 @@ func ProvideLogger(ch *clickhouse.Service) *log.Logger {
 	return logger
 }
 
-func ProvideMetrics() *metrics.Service {
-	svc := metrics.New(&metrics.Config{
-		// run metrics on a separate port to avoid collision with web API
-		Addr:     ":9090",
-		Endpoint: "/metrics",
-	})
+func ProvideMetrics(conf *config.AppConfig) *metrics.Service {
+	errCh := make(chan error, 1)
+	svc := metrics.New(conf.Metrics)
+	svc.Start(errCh)
 	return svc
 }
 
@@ -112,6 +106,6 @@ func ProvideDaemon(ctx context.Context, m *metrics.Service, ch *clickhouse.Servi
 	return daemon.New(ctx, numWorkers, queueSize, m, ch, logger)
 }
 
-func ProvideWebAPI(d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *webapi.API {
-	return webapi.New(d, m, logger)
+func ProvideWebAPI(conf *config.AppConfig, d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *webapi.API {
+	return webapi.New(conf.WebAPI, d, m, logger)
 }

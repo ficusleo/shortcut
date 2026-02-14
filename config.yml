@@ -1,0 +1,11 @@
+---
+metrics:
+  addr: localhost:8090
+  endpoint: /metrics
+clickhouse:
+  dsn: "localhost:8123"
+  num_retries: 3
+  timeout: 10s # golang time format
+  use_tls: false
+web_api:
+  addr: :8080
