@@ -97,10 +97,12 @@ func (api *API) Start() {
 	}()
 }
 
-func (api *API) Stop(ctx context.Context) {
+func (api *API) Stop(ctx context.Context) error {
 	err := api.server.Shutdown(ctx)
 	if err != nil {
 		api.logger.WithError(err).Error("Failed to shut down server")
+		return err
 	}
 	api.logger.Info("Server shut down")
+	return nil
 }

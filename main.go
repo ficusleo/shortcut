@@ -29,18 +29,22 @@ func main() {
 	container.Provide(ProvideConfig)
 	container.Provide(ProvideErrorsChan)
 	container.Provide(ProvideBaseContext)
-	container.Provide(ProvideClickhouse)
 	container.Provide(ProvideLogger)
+	container.Provide(ProvideClickhouse)
 	container.Provide(ProvideMetrics)
 	container.Provide(ProvideDaemon)
 	container.Provide(ProvideWebAPI)
 
-	if err := container.Invoke(func(ctx context.Context, conf *config.AppConfig, m *metrics.Service, d *daemon.Daemon, api *webapi.API, ch *clickhouse.Service) {
-		defer stop(ctx, d, api, m)
+	container.Provide(func(m *metrics.Service) Stoppable { return m }, dig.Group("stoppables"))
+	container.Provide(func(d *daemon.Daemon) Stoppable { return d }, dig.Group("stoppables"))
+	container.Provide(func(api *webapi.API) Stoppable { return api }, dig.Group("stoppables"))
 
-		ch.Start()
-		d.Start(ctx, extapi.New())
-		api.Start()
+	if err := container.Invoke(func(ctx context.Context, args RunArgs) {
+		defer stop(ctx, args.Stop)
+
+		args.CH.Start()
+		args.D.Start(ctx, extapi.New())
+		args.API.Start()
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -50,7 +54,7 @@ func main() {
 			case <-sigCh:
 				log.Info("Received shutdown signal, exiting...")
 				return
-			case err := <-ch.ErrCh:
+			case err := <-args.CH.ErrCh:
 				log.Errorf("clickhouse error: %v", err)
 				return
 			}
@@ -61,10 +65,31 @@ func main() {
 
 }
 
-func stop(ctx context.Context, d *daemon.Daemon, api *webapi.API, m *metrics.Service) {
-	api.Stop(ctx)
-	d.Stop()
-	m.Stop(ctx)
+type RunArgs struct {
+	dig.In
+	CH   *clickhouse.Service
+	D    *daemon.Daemon
+	M    *metrics.Service
+	API  *webapi.API
+	Stop StopArgs
+}
+
+type Stoppable interface {
+	Stop(context.Context) error
+}
+
+type StopArgs struct {
+	dig.In
+	Stoppables []Stoppable `group:"stoppables"`
+}
+
+func stop(ctx context.Context, args StopArgs) {
+	for _, s := range args.Stoppables {
+		err := s.Stop(ctx)
+		if err != nil {
+			log.Errorf("Error stopping service: %v", err)
+		}
+	}
 }
 
 func ProvideBaseContext() context.Context {

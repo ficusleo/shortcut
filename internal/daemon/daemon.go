@@ -69,7 +69,7 @@ func (d *Daemon) Start(ctx context.Context, apiCaller ExternalAPICaller) {
 	}
 }
 
-func (d *Daemon) Stop() {
+func (d *Daemon) Stop(_ context.Context) error {
 	d.workerCancel()
 
 	close(d.TaskQueue)
@@ -95,6 +95,7 @@ func (d *Daemon) Stop() {
 	d.logger.Info("active tasks:", d.Metrics.Recorder.GetActiveTasksTotal())
 	d.logger.Info("All workers have stopped")
 	d.logFinalMetrics()
+	return nil
 }
 
 func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, workerID int) {
