@@ -32,7 +32,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: shortcut_app:v3
+          image: shortcut_app:v4
           ports:
             - containerPort: 8080
             - containerPort: 9090

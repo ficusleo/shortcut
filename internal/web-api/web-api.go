@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
@@ -67,12 +69,26 @@ func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(formattedResponse)
 }
 
+var isShuttingDown atomic.Bool
+
+func readinessHandler(w http.ResponseWriter, r *http.Request) {
+	if isShuttingDown.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("shutting down"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
 func New(conf *Config, d *daemon.Daemon, m *metrics.Service, logger *log.Logger) *API {
 	h := &Handler{}
 	h.WithDaemon(d).WithMetrics(m)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/submit", h.SubmitTask)
+	mux.HandleFunc("/readiness", readinessHandler)
 	mux.HandleFunc("/metrics", h.MetricsHandler)
 
 	server := &http.Server{
@@ -98,6 +114,16 @@ func (api *API) Start() {
 }
 
 func (api *API) Stop(ctx context.Context) error {
+	isShuttingDown.Store(true)
+	api.logger.Info("Readiness probe set to unhealthy, waiting for traffic to drain...")
+
+	// Give some time for LB/Kubernetes to detect the probe failure and stop sending new traffic.
+	// 5 seconds is a typical value, but it depends on the infrastructure.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+	}
+
 	err := api.server.Shutdown(ctx)
 	if err != nil {
 		api.logger.WithError(err).Error("Failed to shut down server")
