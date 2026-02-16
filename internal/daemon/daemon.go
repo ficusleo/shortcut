@@ -73,7 +73,7 @@ func (d *Daemon) Stop(_ context.Context) error {
 	d.workerCancel()
 
 	close(d.TaskQueue)
-	d.moveNotProcessedTasksToPersistentQueue(d.baseCtx)
+	d.moveNotProcessedTasksToPersistentQueue()
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -81,12 +81,7 @@ func (d *Daemon) Stop(_ context.Context) error {
 		close(doneCh)
 	}()
 
-	select {
-	case <-doneCh:
-		// all active tasks finished processing
-	case <-time.After(10 * time.Minute):
-		d.logger.Info("force exit after timeout")
-	}
+	<-doneCh
 
 	d.logger.Info("submitted tasks:", d.Metrics.Recorder.GetSubmittedTasksTotal())
 	d.logger.Info("unavailable service:", d.Metrics.Recorder.GetUnavailableTotal())
@@ -155,7 +150,7 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 		return
 	}
 }
-func (d *Daemon) moveNotProcessedTasksToPersistentQueue(ctx context.Context) {
+func (d *Daemon) moveNotProcessedTasksToPersistentQueue() {
 	for task := range d.TaskQueue {
 		d.Ch.AddNotProcessedTask(task.ID)
 	}

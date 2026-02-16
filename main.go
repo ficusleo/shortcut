@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/dig"
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	numWorkers = 5
-	queueSize  = 100
+	numWorkers       = 5
+	queueSize        = 100
+	_shutdownTimeout = 15 * time.Second
 )
 
 func main() {
@@ -35,9 +37,14 @@ func main() {
 	container.Provide(ProvideDaemon)
 	container.Provide(ProvideWebAPI)
 
-	container.Provide(func(m *metrics.Service) Stoppable { return m }, dig.Group("stoppables"))
-	container.Provide(func(d *daemon.Daemon) Stoppable { return d }, dig.Group("stoppables"))
+	// the dependencies will stop in the order they were registered in the stoppables group
+	// should stop them in this order to ensure no data loss:
+	// webapi.API: Stop receiving new traffic (using the readiness logic we just added).
+	// daemon.Daemon: Finish processing the tasks already in the internal queue.
+	// metrics.Service: Stop the metrics server only after everything else is done.
 	container.Provide(func(api *webapi.API) Stoppable { return api }, dig.Group("stoppables"))
+	container.Provide(func(d *daemon.Daemon) Stoppable { return d }, dig.Group("stoppables"))
+	container.Provide(func(m *metrics.Service) Stoppable { return m }, dig.Group("stoppables"))
 
 	if err := container.Invoke(func(ctx context.Context, args RunArgs) {
 		defer stop(ctx, args.Stop)
@@ -84,10 +91,16 @@ type StopArgs struct {
 }
 
 func stop(ctx context.Context, args StopArgs) {
-	for _, s := range args.Stoppables {
-		err := s.Stop(ctx)
-		if err != nil {
-			log.Errorf("Error stopping service: %v", err)
+	select {
+	// all active tasks finished processing
+	case <-time.After(_shutdownTimeout):
+		log.Info("Shutdown timed out, exiting immediately")
+	default:
+		for _, s := range args.Stoppables {
+			err := s.Stop(ctx)
+			if err != nil {
+				log.Errorf("Error stopping service: %v", err)
+			}
 		}
 	}
 }

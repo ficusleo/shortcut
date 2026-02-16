@@ -13,6 +13,13 @@ import (
 	"shortcut/internal/metrics"
 )
 
+const (
+	_readinessPath    = "/readiness"
+	_submitPath       = "/submit"
+	_metricsPath      = "/metrics"
+	_readinessTimeout = 5 * time.Second
+)
+
 type Config struct {
 	Addr string `mapstructure:"addr"`
 }
@@ -38,6 +45,11 @@ func (h *Handler) WithMetrics(m *metrics.Service) *Handler {
 }
 
 func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
+	if isShuttingDown.Load() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
+
 	task := &daemon.Task{ID: h.daemon.NewTaskID()}
 
 	// ⚠️ Критическая точка: если канал полон — горутина ЗАБЛОКИРУЕТСЯ!
@@ -87,9 +99,9 @@ func New(conf *Config, d *daemon.Daemon, m *metrics.Service, logger *log.Logger)
 	h.WithDaemon(d).WithMetrics(m)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/submit", h.SubmitTask)
-	mux.HandleFunc("/readiness", readinessHandler)
-	mux.HandleFunc("/metrics", h.MetricsHandler)
+	mux.HandleFunc(_submitPath, h.SubmitTask)
+	mux.HandleFunc(_readinessPath, readinessHandler)
+	mux.HandleFunc(_metricsPath, h.MetricsHandler)
 
 	server := &http.Server{
 		Addr:    conf.Addr,
@@ -120,7 +132,7 @@ func (api *API) Stop(ctx context.Context) error {
 	// Give some time for LB/Kubernetes to detect the probe failure and stop sending new traffic.
 	// 5 seconds is a typical value, but it depends on the infrastructure.
 	select {
-	case <-time.After(5 * time.Second):
+	case <-time.After(_readinessTimeout):
 	case <-ctx.Done():
 	}
 
