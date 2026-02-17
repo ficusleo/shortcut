@@ -51,17 +51,20 @@ func (h *Handler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task := &daemon.Task{ID: h.daemon.NewTaskID()}
-
+	status := http.StatusAccepted
 	// ⚠️ Критическая точка: если канал полон — горутина ЗАБЛОКИРУЕТСЯ!
 	select {
 	case h.daemon.TaskQueue <- task:
 		// Успешно добавлено в очередь
 	default:
-		http.Error(w, "Task queue is full, try again later", http.StatusServiceUnavailable)
+		status = http.StatusServiceUnavailable
+		http.Error(w, "Task queue is full, try again later", status)
+		h.metrics.Recorder.IncHTTPResponseStatus(status)
 		return
 	}
+	h.metrics.Recorder.IncHTTPResponseStatus(status)
 
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(status)
 }
 
 func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
@@ -73,11 +76,9 @@ func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusAccepted
 	if err != nil {
 		status = http.StatusInternalServerError
-		h.metrics.Recorder.IncHTTPResponseStatus(status)
 		http.Error(w, "Failed to format response", status)
 		return
 	}
-	h.metrics.Recorder.IncHTTPResponseStatus(status)
 	w.Write(formattedResponse)
 }
 

@@ -32,7 +32,8 @@ spec:
     spec:
       containers:
         - name: app
-          image: shortcut_app:v4
+          image: shortcut_app:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
             - containerPort: 9090

@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	statusCodeLabel = "code"
-	methodLabel     = "method"
-	errorLabel      = "error"
+	taskProcessedLabel = "processed"
+	statusCodeLabel    = "code"
+	methodLabel        = "method"
+	errorLabel         = "error"
 )
 
 // Service struct
@@ -36,6 +37,7 @@ type RecorderConfig struct {
 type Recorder struct {
 	conf *RecorderConfig
 
+	taskCounter   *prometheus.CounterVec // 200, 503
 	statusCounter *prometheus.CounterVec // 200, 503
 	errorCounter  *prometheus.CounterVec //timeouts, common errors
 
@@ -47,7 +49,7 @@ type Recorder struct {
 }
 
 // New constructor
-func New(conf *Config, ) *Service {
+func New(conf *Config) *Service {
 	return &Service{
 		API:      newAPI(conf),
 		Recorder: NewRecorder(),
@@ -86,6 +88,13 @@ func NewRecorder() *Recorder {
 
 	r := &Recorder{
 		conf: conf,
+
+		taskCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: conf.Prefix,
+			Subsystem: "task",
+			Name:      "processed_tasks_total",
+			Help:      "The total number of accepted HTTP requests.",
+		}, []string{taskProcessedLabel}),
 
 		statusCounter: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: conf.Prefix,
@@ -140,7 +149,20 @@ func (r *Recorder) GetMetrics() map[string]any {
 	metrics["submitted_tasks_total"] = r.GetSubmittedTasksTotal()
 	metrics["task_errors_total"] = r.GetTaskErrorsTotal()
 	metrics["timeouts_total"] = r.GetTimeoutsTotal()
+	metrics["processed_tasks_total"] = r.GetProcessedTasksTotal()
 	return metrics
+}
+
+func (r *Recorder) IncProcessedTasks(processed bool) {
+	r.taskCounter.WithLabelValues(strconv.FormatBool(processed)).Inc()
+}
+
+func (r *Recorder) GetProcessedTasksTotal() uint64 {
+	metric := &dto.Metric{}
+	if err := r.taskCounter.WithLabelValues("true").Write(metric); err != nil {
+		return 0
+	}
+	return uint64(metric.GetCounter().GetValue())
 }
 
 func (r *Recorder) GetMemUsed() float64 {
@@ -193,10 +215,6 @@ func (r *Recorder) GetTimeoutsTotal() uint64 {
 
 func (r *Recorder) IncHTTPResponseStatus(statusCode int) {
 	r.statusCounter.WithLabelValues(strconv.Itoa(statusCode)).Inc()
-}
-
-func (r *Recorder) IncSubmittedTasksTotal() {
-	r.statusCounter.WithLabelValues("202").Inc()
 }
 
 func (r *Recorder) IncTaskError() {

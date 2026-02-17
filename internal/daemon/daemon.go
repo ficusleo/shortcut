@@ -139,7 +139,6 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 			errChan <- err
 			return
 		}
-		d.Metrics.Recorder.IncSubmittedTasksTotal()
 		close(doneProcessing)
 	}()
 
@@ -147,6 +146,7 @@ func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAP
 	case <-errChan:
 		return
 	case <-doneProcessing:
+		d.Metrics.Recorder.IncProcessedTasks(true)
 		return
 	}
 }
