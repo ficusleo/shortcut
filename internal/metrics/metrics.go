@@ -247,7 +247,7 @@ func (r *Recorder) AddInflightRequests(quantity int) {
 // RegisterMetrics registers needed metrics with default prometheus registerer
 func (r *Recorder) RegisterMetrics() error {
 	metricsToRegister := []prometheus.Collector{
-		r.activeTasks, r.errorCounter, r.taskDuration, r.memUsed, r.httpRequestsInflight, r.statusCounter,
+		r.activeTasks, r.errorCounter, r.taskDuration, r.memUsed, r.httpRequestsInflight, r.statusCounter, r.taskCounter,
 	}
 
 	for _, metric := range metricsToRegister {
