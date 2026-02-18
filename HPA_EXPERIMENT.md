@@ -37,6 +37,15 @@ Current per-pod resources (from `app.yaml`):
 
 ## 4) Compute safe max pods vs cluster capacity
 
+Quick way (recommended):
+
+```bash
+chmod +x scripts/calc_safe_max_pods.sh
+./scripts/calc_safe_max_pods.sh
+```
+
+This prints `safeMaxPods` and all intermediate values.
+
 Get allocatable node resources:
 
 ```bash
@@ -97,6 +106,30 @@ kubectl -n shortcut get deploy shortcut-app-service
 ```
 
 ## 7) Validate experiment result
+
+All-in-one mode (start load + watch PASS/FAIL together):
+
+```bash
+chmod +x scripts/run_hpa_experiment_check.sh
+# CPU experiment
+./scripts/run_hpa_experiment_check.sh shortcut shortcut-app-service shortcut-app-service shortcut-app-service-hpa cpu 5 20 4 90
+
+# Memory experiment
+./scripts/run_hpa_experiment_check.sh shortcut shortcut-app-service shortcut-app-service shortcut-app-service-hpa memory 5 12 4 90 192 120
+```
+
+Quick PASS/FAIL checks:
+
+```bash
+chmod +x scripts/check_hpa_bounds.sh
+./scripts/check_hpa_bounds.sh
+```
+
+Watch during active load (every 5s):
+
+```bash
+./scripts/check_hpa_bounds.sh shortcut shortcut-app-service shortcut-app-service-hpa 5
+```
 
 Pass criteria:
 

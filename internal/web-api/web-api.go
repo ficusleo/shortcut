@@ -105,7 +105,7 @@ func runCPULoad(workers int, duration time.Duration) {
 	var wg sync.WaitGroup
 	wg.Add(workers)
 
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(offset int) {
 			defer wg.Done()
 			value := float64(offset + 1)
