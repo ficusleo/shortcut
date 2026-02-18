@@ -3,7 +3,12 @@ package webapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
+	"runtime"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +22,8 @@ const (
 	_readinessPath    = "/readiness"
 	_submitPath       = "/submit"
 	_metricsPath      = "/metrics"
+	_cpuLoadPath      = "/load/cpu"
+	_memoryLoadPath   = "/load/memory"
 	_readinessTimeout = 5 * time.Second
 )
 
@@ -82,6 +89,107 @@ func (h *Handler) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(formattedResponse)
 }
 
+func parsePositiveInt(raw string, fallback int) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("value must be a positive integer")
+	}
+	return v, nil
+}
+
+func runCPULoad(workers int, duration time.Duration) {
+	deadline := time.Now().Add(duration)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func(offset int) {
+			defer wg.Done()
+			value := float64(offset + 1)
+			for time.Now().Before(deadline) {
+				value = math.Sqrt(value*1.000001 + 123.456)
+				if value > 100000 {
+					value = 1
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func runMemoryLoad(megabytes int, duration time.Duration) {
+	chunk := make([]byte, megabytes*1024*1024)
+	for i := 0; i < len(chunk); i += 4096 {
+		chunk[i] = byte(i)
+	}
+
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+
+	timeout := time.After(duration)
+	for {
+		select {
+		case <-timeout:
+			runtime.KeepAlive(chunk)
+			return
+		case <-ticker.C:
+			for i := 0; i < len(chunk); i += 4096 {
+				chunk[i]++
+			}
+		}
+	}
+}
+
+func (h *Handler) CPULoadHandler(w http.ResponseWriter, r *http.Request) {
+	workers, err := parsePositiveInt(r.URL.Query().Get("workers"), runtime.NumCPU())
+	if err != nil {
+		http.Error(w, "workers must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	seconds, err := parsePositiveInt(r.URL.Query().Get("seconds"), 30)
+	if err != nil {
+		http.Error(w, "seconds must be a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	go runCPULoad(workers, time.Duration(seconds)*time.Second)
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"message": "cpu load started",
+		"workers": workers,
+		"seconds": seconds,
+	})
+}
+
+func (h *Handler) MemoryLoadHandler(w http.ResponseWriter, r *http.Request) {
+	megabytes, err := parsePositiveInt(r.URL.Query().Get("mb"), 128)
+	if err != nil {
+		http.Error(w, "mb must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	seconds, err := parsePositiveInt(r.URL.Query().Get("seconds"), 30)
+	if err != nil {
+		http.Error(w, "seconds must be a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	go runMemoryLoad(megabytes, time.Duration(seconds)*time.Second)
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"message": "memory load started",
+		"mb":      megabytes,
+		"seconds": seconds,
+	})
+}
+
 var isShuttingDown atomic.Bool
 
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +211,8 @@ func New(conf *Config, d *daemon.Daemon, m *metrics.Service, logger *log.Logger)
 	mux.HandleFunc(_submitPath, h.SubmitTask)
 	mux.HandleFunc(_readinessPath, readinessHandler)
 	mux.HandleFunc(_metricsPath, h.MetricsHandler)
+	mux.HandleFunc(_cpuLoadPath, h.CPULoadHandler)
+	mux.HandleFunc(_memoryLoadPath, h.MemoryLoadHandler)
 
 	server := &http.Server{
 		Addr:    conf.Addr,
