@@ -40,6 +40,13 @@ Current per-pod resources (from `app.yaml`):
 Quick way (recommended):
 
 ```bash
+make hpa-help
+make hpa-safe
+```
+
+Equivalent script call:
+
+```bash
 chmod +x scripts/calc_safe_max_pods.sh
 ./scripts/calc_safe_max_pods.sh
 ```
@@ -110,6 +117,22 @@ kubectl -n shortcut get deploy shortcut-app-service
 All-in-one mode (start load + watch PASS/FAIL together):
 
 ```bash
+# CPU experiment
+make hpa-cpu
+
+# Memory experiment
+make hpa-mem
+```
+
+With overrides example:
+
+```bash
+make hpa-cpu WATCH=3 CPU_ITER=30 CPU_WORKERS=6 CPU_SECONDS=120
+```
+
+Equivalent script calls:
+
+```bash
 chmod +x scripts/run_hpa_experiment_check.sh
 # CPU experiment
 ./scripts/run_hpa_experiment_check.sh shortcut shortcut-app-service shortcut-app-service shortcut-app-service-hpa cpu 5 20 4 90
@@ -121,11 +144,23 @@ chmod +x scripts/run_hpa_experiment_check.sh
 Quick PASS/FAIL checks:
 
 ```bash
+make hpa-check
+```
+
+Equivalent script call:
+
+```bash
 chmod +x scripts/check_hpa_bounds.sh
 ./scripts/check_hpa_bounds.sh
 ```
 
 Watch during active load (every 5s):
+
+```bash
+make hpa-watch WATCH=5
+```
+
+Equivalent script call:
 
 ```bash
 ./scripts/check_hpa_bounds.sh shortcut shortcut-app-service shortcut-app-service-hpa 5
