@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -30,44 +28,48 @@ type MinIO struct {
 	bucket string
 }
 
-func NewMinIOFromEnv() (*MinIO, error) {
-	endpoint := os.Getenv("MINIO_ENDPOINT")
-	if endpoint == "" {
-		endpoint = "localhost:9000"
+type Config struct {
+	Endpoint  string `mapstructure:"endpoint"`
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+	DLQBucket string `mapstructure:"dlq_bucket"`
+	UseSSL    bool   `mapstructure:"use_ssl"`
+}
+
+func NewMinIO(conf *Config) (*MinIO, error) {
+	effective := Config{
+		Endpoint:  "localhost:9000",
+		AccessKey: "minioadmin",
+		SecretKey: "minioadmin",
+		DLQBucket: "tasks-dlq",
+		UseSSL:    false,
 	}
 
-	accessKey := os.Getenv("MINIO_ACCESS_KEY")
-	if accessKey == "" {
-		accessKey = "minioadmin"
-	}
-
-	secretKey := os.Getenv("MINIO_SECRET_KEY")
-	if secretKey == "" {
-		secretKey = "minioadmin"
-	}
-
-	bucket := os.Getenv("MINIO_DLQ_BUCKET")
-	if bucket == "" {
-		bucket = "tasks-dlq"
-	}
-
-	useSSL := false
-	if rawSSL := os.Getenv("MINIO_USE_SSL"); rawSSL != "" {
-		parsed, err := strconv.ParseBool(rawSSL)
-		if err == nil {
-			useSSL = parsed
+	if conf != nil {
+		if conf.Endpoint != "" {
+			effective.Endpoint = conf.Endpoint
 		}
+		if conf.AccessKey != "" {
+			effective.AccessKey = conf.AccessKey
+		}
+		if conf.SecretKey != "" {
+			effective.SecretKey = conf.SecretKey
+		}
+		if conf.DLQBucket != "" {
+			effective.DLQBucket = conf.DLQBucket
+		}
+		effective.UseSSL = conf.UseSSL
 	}
 
-	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: useSSL,
+	client, err := minio.New(effective.Endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(effective.AccessKey, effective.SecretKey, ""),
+		Secure: effective.UseSSL,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return &MinIO{client: client, bucket: bucket}, nil
+	return &MinIO{client: client, bucket: effective.DLQBucket}, nil
 }
 
 func (m *MinIO) SendInvalidPayload(ctx context.Context, messageID string, payload []byte, reason string) error {

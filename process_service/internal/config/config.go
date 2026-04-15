@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/viper"
 
 	"process_service/internal/bus"
+	"process_service/internal/dlq"
 	"process_service/internal/metrics"
 	"process_service/internal/repository"
 )
@@ -22,6 +23,7 @@ const (
 // AppConfig is an example for app's config container
 type AppConfig struct {
 	RedisConf *bus.Config `mapstructure:"bus"`
+	MinIOConf *dlq.Config `mapstructure:"minio"`
 	RepoConf  *repository.Config `mapstructure:"repository"`
 	Metrics *metrics.Config    `mapstructure:"metrics"`
 }

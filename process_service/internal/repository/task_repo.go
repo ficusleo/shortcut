@@ -57,7 +57,7 @@ func (r *TaskRepository) UpdateTaskStatus(taskID uuid.UUID, status domain.TaskSt
 	if r.s == nil {
 		return nil
 	}
-	query := "UPDATE tasks SET status = $1 WHERE id = $2"
+	query := "ALTER TABLE tasks UPDATE status = $1 WHERE id = $2 SETTINGS mutations_sync = 1"
 	if err := r.s.Client.conn.Exec(r.s.Client.ctx, query, status, taskID); err != nil {
 		r.s.logger.WithError(err).Errorf("Failed to update task %s status to %s", taskID, status)
 		return err
@@ -70,7 +70,7 @@ func (r *TaskRepository) MarkTaskInvalid(ctx context.Context, taskID uuid.UUID, 
 		return nil
 	}
 
-	query := "UPDATE tasks SET status = $1, failed_payload = $2 WHERE id = $3"
+	query := "ALTER TABLE tasks UPDATE status = $1, failed_payload = $2 WHERE id = $3 SETTINGS mutations_sync = 1"
 	if err := r.s.Client.conn.Exec(ctx, query, domain.StatusFailed, failedPayload, taskID); err != nil {
 		r.s.logger.WithError(err).Errorf("Failed to mark task %s invalid: %s", taskID, reason)
 		return err

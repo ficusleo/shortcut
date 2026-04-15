@@ -63,22 +63,6 @@ spec:
               value: "redis.shortcut.svc.cluster.local:6379"
             - name: METRICS_ADDR
               value: ":9090"
-            - name: MINIO_ENDPOINT
-              value: "minio.shortcut.svc.cluster.local:9000"
-            - name: MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: minio-credentials
-                  key: root-user
-            - name: MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: minio-credentials
-                  key: root-password
-            - name: MINIO_DLQ_BUCKET
-              value: "tasks-dlq"
-            - name: MINIO_USE_SSL
-              value: "false"
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

@@ -140,5 +140,5 @@ func PovideTaskService(repo *repository.Service) *repository.TaskRepository {
 }
 
 func ProvideDaemon(ctx context.Context, conf *config.AppConfig, m *metrics.Service, repo *repository.Service, taskRepo *repository.TaskRepository, logger *log.Logger) *daemon.Daemon {
-	return daemon.New(ctx, conf.RedisConf, numWorkers, queueSize, m, repo, taskRepo, logger)
+	return daemon.New(ctx, conf.RedisConf, conf.MinIOConf, numWorkers, queueSize, m, repo, taskRepo, logger)
 }

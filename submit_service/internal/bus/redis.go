@@ -21,9 +21,18 @@ func NewProducer(redisClient *redis.Client) *Producer {
 }
 
 func (p *Producer) ProduceTask(ctx context.Context, task *domain.Task) error {
+	payload := ""
+	if task.Payload != nil {
+		payload = *task.Payload
+	}
+
 	if err := p.redisClient.XAdd(ctx, &redis.XAddArgs{
 		Stream: "tasks",
-		Values: task,
+		Values: map[string]interface{}{
+			"id":      task.ID.String(),
+			"status":  string(task.Status),
+			"payload": payload,
+		},
 	}).Err(); err != nil {
 		return err
 	}

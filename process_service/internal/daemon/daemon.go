@@ -45,12 +45,12 @@ type Daemon struct {
 	workerCancel func()
 }
 
-func New(ctx context.Context, conf *bus.Config, numWorkers int, queueSize int, m *metrics.Service, db PersistentQueue, statusHook bus.InvalidTaskStatusUpdater, logger *log.Logger) *Daemon {
+func New(ctx context.Context, busConf *bus.Config, minioConf *dlq.Config, numWorkers int, queueSize int, m *metrics.Service, db PersistentQueue, statusHook bus.InvalidTaskStatusUpdater, logger *log.Logger) *Daemon {
 
-	rdb := redis.NewClient(&redis.Options{Addr: conf.RedisAddr})
+	rdb := redis.NewClient(&redis.Options{Addr: busConf.RedisAddr})
 
 	var dlqWriter dlq.Writer
-	if minioDLQ, err := dlq.NewMinIOFromEnv(); err != nil {
+	if minioDLQ, err := dlq.NewMinIO(minioConf); err != nil {
 		logger.WithError(err).Warn("failed to initialize minio dlq storage")
 	} else {
 		dlqWriter = minioDLQ
