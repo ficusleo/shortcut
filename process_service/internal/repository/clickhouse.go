@@ -125,6 +125,10 @@ func (c *Client) ensureTables() error {
 		}
 	}
 
+	if err := c.conn.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS failed_payload Nullable(String)`); err != nil {
+		return err
+	}
+
 	return nil
 }
 

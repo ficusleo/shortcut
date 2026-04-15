@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"context"
 	"net/http"
 
 	"submit_service/internal/domain"
@@ -11,7 +12,7 @@ import (
 )
 
 type TaskBus interface {
-	ProduceTask(task *domain.Task) error
+	ProduceTask(ctx context.Context, task *domain.Task) error
 }
 
 type TaskHandler struct {
@@ -21,8 +22,9 @@ type TaskHandler struct {
 	metrics     *metrics.Service
 }
 
-func NewTaskHandler(taskService *services.TaskService, m *metrics.Service) *TaskHandler {
+func NewTaskHandler(taskService *services.TaskService, taskBus TaskBus, m *metrics.Service) *TaskHandler {
 	return &TaskHandler{
+		bus:         taskBus,
 		taskService: taskService,
 		sem:         make(chan struct{}, 100), // Ограничение на 100 одновременных задач
 		metrics:     m,
@@ -46,7 +48,7 @@ func (th *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 			th.metrics.Recorder.IncHTTPResponseStatus(http.StatusBadRequest)
 			return
 		}
-		th.startTaskProcessing(w, &domain.Task{
+		th.startTaskProcessing(r.Context(), w, &domain.Task{
 			ID: uuid.New(), Status: taskStatus, Payload: &payload,
 		})
 	default:
@@ -60,14 +62,14 @@ func (th *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 }
 
-func (th *TaskHandler) startTaskProcessing(w http.ResponseWriter, task *domain.Task) {
+func (th *TaskHandler) startTaskProcessing(ctx context.Context, w http.ResponseWriter, task *domain.Task) {
 	defer func() { <-th.sem }()
 	if err := th.taskService.InsertTask(task); err != nil {
 		http.Error(w, "Failed to insert task", http.StatusInternalServerError)
 		th.metrics.Recorder.IncHTTPResponseStatus(http.StatusInternalServerError)
 		return
 	}
-	if err := th.bus.ProduceTask(task); err != nil {
+	if err := th.bus.ProduceTask(ctx, task); err != nil {
 		if err := th.taskService.UpdateTaskStatus(task.ID, domain.StatusPending); err != nil {
 			http.Error(w, "Failed to update task status to failed", http.StatusInternalServerError)
 			th.metrics.Recorder.IncHTTPResponseStatus(http.StatusInternalServerError)
@@ -105,7 +107,7 @@ func (th *TaskHandler) ResumeTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to update task status", http.StatusInternalServerError)
 			return
 		}
-		th.startTaskProcessing(w, task)
+		th.startTaskProcessing(r.Context(), w, task)
 		w.WriteHeader(http.StatusAccepted)
 	case domain.StatusProcessing:
 		http.Error(w, "Task is already in progress or pending", http.StatusBadRequest)

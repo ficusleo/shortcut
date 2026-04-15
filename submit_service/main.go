@@ -8,12 +8,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/dig"
 
 	"submit_service/internal/bus"
 	"submit_service/internal/config"
-	"submit_service/internal/daemon"
 	"submit_service/internal/metrics"
 	"submit_service/internal/repository"
 	"submit_service/internal/services"
@@ -34,25 +34,23 @@ func main() {
 	container.Provide(ProvideBaseContext)
 	container.Provide(ProvideLogger)
 	container.Provide(ProvideRepository)
-	container.Provide(PovideTaskService)
+	container.Provide(ProvideRedisClient)
+	container.Provide(ProvideTaskProducer)
+	container.Provide(ProvideTaskService)
 	container.Provide(ProvideMetrics)
-	container.Provide(ProvideDaemon)
 	container.Provide(ProvideWebAPI)
 
 	// the dependencies will stop in the order they were registered in the stoppables group
 	// should stop them in this order to ensure no data loss:
 	// webapi.API: Stop receiving new traffic (using the readiness logic we just added).
-	// daemon.Daemon: Finish processing the tasks already in the internal queue.
 	// metrics.Service: Stop the metrics server only after everything else is done.
 	container.Provide(func(api *webapi.API) Stoppable { return api }, dig.Group("stoppables"))
-	container.Provide(func(d *daemon.Daemon) Stoppable { return d }, dig.Group("stoppables"))
 	container.Provide(func(m *metrics.Service) Stoppable { return m }, dig.Group("stoppables"))
 
 	if err := container.Invoke(func(ctx context.Context, args RunArgs) {
 		defer stop(ctx, args.Stop)
 
 		args.Repo.Start()
-		args.D.Start(ctx)
 		args.API.Start()
 
 		sigCh := make(chan os.Signal, 1)
@@ -77,7 +75,6 @@ func main() {
 type RunArgs struct {
 	dig.In
 	Repo   *repository.Service
-	D    *daemon.Daemon
 	M    *metrics.Service
 	API  *webapi.API
 	Stop StopArgs
@@ -142,14 +139,18 @@ func ProvideMetrics(conf *config.AppConfig) *metrics.Service {
 	return svc
 }
 
-func PovideTaskService(repo *repository.Service) *repository.TaskRepository {
-	return repository.NewTaskRepository(repo)
+func ProvideRedisClient(conf *config.AppConfig) *redis.Client {
+	return redis.NewClient(&redis.Options{Addr: conf.RedisConf.RedisAddr})
 }
 
-func ProvideDaemon(ctx context.Context, busSrv *bus.Service, m *metrics.Service,logger *log.Logger) *daemon.Daemon {
-	return daemon.New(ctx, busSrv, numWorkers, queueSize, m, logger)
+func ProvideTaskProducer(redisClient *redis.Client) *bus.Producer {
+	return bus.NewProducer(redisClient)
 }
 
-func ProvideWebAPI(ctx context.Context, conf *config.AppConfig, taskSrv *services.TaskService, m *metrics.Service, logger *log.Logger) *webapi.API {
-	return webapi.New(ctx, conf.WebAPI, taskSrv, m, logger)
+func ProvideTaskService(repo *repository.Service) *services.TaskService {
+	return services.NewTaskService(repository.NewTaskRepository(repo))
+}
+
+func ProvideWebAPI(ctx context.Context, conf *config.AppConfig, taskSrv *services.TaskService, producer *bus.Producer, m *metrics.Service, logger *log.Logger) *webapi.API {
+	return webapi.New(ctx, conf.WebAPI, taskSrv, producer, m, logger)
 }

@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"process_service/internal/dlq"
 	"process_service/internal/domain"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+)
+
+const (
+	streamName = "tasks"
+	groupName  = "task_group"
 )
 
 type Config struct {
@@ -60,12 +66,19 @@ func NewConsumer(redisClient *redis.Client, dlqWriter dlq.Writer, statusHook ...
 
 func (c *Consumer) ConsumeTasks(ctx context.Context, apiCaller ExternalAPICaller, workerID int, 
 	handler func(ctx context.Context, apiCaller ExternalAPICaller, workerID int, task *domain.Task) error) error {
-	// Implementation for consuming tasks from Redis stream and processing them with the provided handler
-	streams, err := c.Client.XRead(ctx, &redis.XReadArgs{
-		Streams: []string{"tasks", "0"},
-		Block:   0,
+	consumerName := fmt.Sprintf("worker-%d", workerID)
+
+	streams, err := c.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    groupName,
+		Consumer: consumerName,
+		Streams:  []string{streamName, ">"},
+		Count:    1,
+		Block:    time.Second,
 	}).Result()
 	if err != nil {
+		if err == redis.Nil {
+			return nil
+		}
 		return err
 	}
 
@@ -127,7 +140,7 @@ func (c *Consumer) ConsumeTasks(ctx context.Context, apiCaller ExternalAPICaller
 }
 
 func (c *Consumer) ackMessage(ctx context.Context, messageID string) error {
-	return c.Client.XAck(ctx, "tasks", "task_group", messageID).Err()
+	return c.Client.XAck(ctx, streamName, groupName, messageID).Err()
 }
 
 func (c *Consumer) handleInvalidPayload(ctx context.Context, message redis.XMessage, hasTaskID bool, taskID uuid.UUID, payload []byte, reason string) error {

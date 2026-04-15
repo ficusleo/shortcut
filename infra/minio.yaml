@@ -1,65 +1,85 @@
 apiVersion: v1
-kind: Namespace
+kind: Secret
 metadata:
-  name: shortcut
+  name: minio-credentials
+  namespace: shortcut
+type: Opaque
+stringData:
+  root-user: minioadmin
+  root-password: minioadmin
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: shortcut
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: clickhouse
+  name: minio
   namespace: shortcut
 spec:
-  type: NodePort
+  selector:
+    app: minio
   ports:
-    - name: http
-      port: 8123
-      targetPort: 8123
-      nodePort: 30123
-    - name: native
+    - name: api
       port: 9000
       targetPort: 9000
-      nodePort: 30900
-  selector:
-    app: clickhouse
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: shortcut
+    - name: console
+      port: 9001
+      targetPort: 9001
+  type: ClusterIP
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: clickhouse
+  name: minio
   namespace: shortcut
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: clickhouse
+      app: minio
   template:
     metadata:
       labels:
-        app: clickhouse
+        app: minio
     spec:
       containers:
-      - name: clickhouse
-        image: clickhouse/clickhouse-server:latest
-        ports:
-        - containerPort: 8123
-          name: http
-        - containerPort: 9000
-          name: native
-        env:
-        - name: CLICKHOUSE_DB
-          value: "default"
-        - name: CLICKHOUSE_USER
-          value: "default"
-        - name: CLICKHOUSE_PASSWORD
-          value: "password123"
-        volumeMounts:
-        - name: clickhouse-data
-          mountPath: /var/lib/clickhouse
+        - name: minio
+          image: minio/minio:RELEASE.2025-02-28T09-55-16Z
+          args:
+            - server
+            - /data
+            - --console-address
+            - :9001
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-password
+          volumeMounts:
+            - name: data
+              mountPath: /data
       volumes:
-      - name: clickhouse-data
-        emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: minio-data

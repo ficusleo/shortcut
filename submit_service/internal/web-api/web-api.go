@@ -29,12 +29,12 @@ type API struct {
 	server *http.Server
 }
 
-func New(ctx context.Context, conf *Config, taskSrv *services.TaskService, m *metrics.Service, logger *log.Logger) *API {
+func New(ctx context.Context, conf *Config, taskSrv *services.TaskService, taskBus TaskBus, m *metrics.Service, logger *log.Logger) *API {
 	cpuLoadHandler := NewCPULoadHandler()
 	readinessHandler := NewReadinessHandler()
 	memoryLoadHandler := NewMemoryLoadHandler()
 	metricsHandler := NewMetricsHandler(taskSrv, m)
-	tasksHandler := NewTaskHandler(taskSrv, m)
+	tasksHandler := NewTaskHandler(taskSrv, taskBus, m)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(_submitPath, tasksHandler.SubmitTask)

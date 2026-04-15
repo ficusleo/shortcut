@@ -1,13 +1,13 @@
 ---
-metrics:
-  addr: localhost:9090
-  endpoint: /metrics
-clickhouse:
+repository:
   dsn: "localhost:8123"
   num_retries: 3
   timeout: 10s # golang time format
   use_tls: false
   user: "default"
   password: "password123"
-web_api:
-  addr: :8080
+bus:
+  redis_addr: "localhost:6379"
+metrics:
+  addr: localhost:9090
+  endpoint: /metrics
