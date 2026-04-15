@@ -3,77 +3,60 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 
-	"shortcut/extapi"
-	"shortcut/internal/metrics"
+	"submit_service/internal/bus"
+	"submit_service/internal/domain"
+	"submit_service/internal/metrics"
+	"submit_service/internal/services"
 )
 
-type ExternalAPICaller interface {
-	GetSomething(ctx context.Context, taskID string, workerID int) error
-}
-
-type PersistentQueue interface {
-	AddNotProcessedTask(taskID string)
-	GetAllNotProcessedTasks() []string
-}
-
-type Task struct {
-	ID string
-}
-
-// Генерируем простой ID
-func (d *Daemon) NewTaskID() string {
-	nextID := atomic.AddUint64(&d.taskCounter, 1)
-	return fmt.Sprintf("task-%d", nextID)
-}
+const (
+	redisStreamName = "tasks"
+	redisGroupName  = "task_group"
+)
 
 type Daemon struct {
-	logger      *log.Logger
 	baseCtx     context.Context
+	logger      *log.Logger
+	taskSrv *services.TaskService
 	numWorkers  int
 	taskCounter uint64
+	redisSrv *bus.Service
 	Metrics     *metrics.Service
-	TaskQueue   chan *Task
+	
+	Sem         chan struct{}
 	Wg          *sync.WaitGroup
-	Ch          PersistentQueue
-
 	workerCancel func()
 }
 
-func New(ctx context.Context, numWorkers int, queueSize int, m *metrics.Service, db PersistentQueue, logger *log.Logger) *Daemon {
+func New(ctx context.Context, srv *bus.Service, numWorkers int, queueSize int, m *metrics.Service, logger *log.Logger) *Daemon {
 	return &Daemon{
-		logger:     logger,
-		Metrics:    m,
-		TaskQueue:  make(chan *Task, queueSize),
-		numWorkers: numWorkers,
-		Wg:         &sync.WaitGroup{},
-		baseCtx:    ctx,
-		Ch:         db,
+		logger:      logger,
+		Metrics:     m,
+		redisSrv:    srv,
+		Sem:         make(chan struct{}, queueSize),
+		numWorkers:  numWorkers,
+		Wg:          &sync.WaitGroup{},
+		baseCtx:     ctx,
 	}
 }
 
-func (d *Daemon) Start(ctx context.Context, apiCaller ExternalAPICaller) {
+func (d *Daemon) Start(ctx context.Context) {
 	d.baseCtx = ctx
 	workerCtx, cancel := context.WithCancel(ctx)
 	d.workerCancel = cancel
-	for i := range d.numWorkers {
+	for i := 0; i < d.numWorkers; i++ {
 		id := i + 1
-		go d.worker(workerCtx, apiCaller, id)
+		go d.worker(workerCtx, id)
 	}
 }
 
 func (d *Daemon) Stop(_ context.Context) error {
 	d.workerCancel()
-
-	close(d.TaskQueue)
-	d.moveNotProcessedTasksToPersistentQueue()
 
 	doneCh := make(chan struct{})
 	go func() {
@@ -93,73 +76,57 @@ func (d *Daemon) Stop(_ context.Context) error {
 	return nil
 }
 
-func (d *Daemon) worker(ctx context.Context, apiCaller ExternalAPICaller, workerID int) {
+func (d *Daemon) worker(ctx context.Context, workerID int) {
 	for {
 		select {
 		case <-ctx.Done():
 			d.logger.WithFields(log.Fields{"workerId": workerID}).Info("stopped by context done")
 			return
-		case task, ok := <-d.TaskQueue:
-			if !ok {
-				d.logger.WithFields(log.Fields{"workerId": workerID}).Info("task queue closed, worker exiting")
-				return
-			}
-			d.Metrics.Recorder.AddActiveTasks(1)
-			d.Wg.Add(1)
-			d.processingWithTimeout(d.baseCtx, apiCaller, workerID, task)
+		default:
+			d.redisSrv.Consumer.ConsumeTasks(ctx, workerID, d.process)
 		}
 	}
 }
 
-func (d *Daemon) processingWithTimeout(ctx context.Context, apiCaller ExternalAPICaller, workerID int, task *Task) {
+
+func (d *Daemon) process(ctx context.Context, workerID int, task *domain.Task) error {
 	defer d.Wg.Done()
 	processingCtx, cancel := context.WithTimeout(ctx, time.Duration(3)*time.Second)
 	defer cancel()
 
 	d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID}).Info("start processing")
-	startedAt := time.Now()
-	defer func() {
-		d.Metrics.Recorder.ObserveTaskDuration(time.Since(startedAt))
-		d.Metrics.Recorder.DecActiveTasks(1)
-	}()
 
 	doneProcessing := make(chan struct{})
 	errChan := make(chan error, 1)
 	go func() {
-		err := apiCaller.GetSomething(processingCtx, task.ID, workerID)
-		if err != nil {
-			var customErr *extapi.CustomError
-			if errors.As(err, &customErr) {
-				d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID, "error": customErr.Msg}).Error("External API error")
-				d.Metrics.Recorder.IncTaskError()
+		if task.Status == domain.StatusFailed{
+			err := d.taskSrv.UpdateTaskStatus(task.ID, domain.StatusFailed)
+			if err != nil {
+				errChan <- err
+				return
 			}
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				d.Metrics.Recorder.IncTaskTimeout()
-			}
-			errChan <- err
-			return
+
 		}
 		close(doneProcessing)
 	}()
 
 	select {
-	case <-errChan:
-		return
+	case <-processingCtx.Done():
+		if processingCtx.Err() == context.DeadlineExceeded {
+			d.Metrics.Recorder.IncTaskTimeout()
+			d.logger.WithFields(log.Fields{"workerId": workerID, "taskId": task.ID}).Warn("task processing timed out")
+		}
+		return nil
+	case err := <-errChan:
+		return err
 	case <-doneProcessing:
 		d.Metrics.Recorder.IncProcessedTasks(true)
-		return
-	}
-}
-func (d *Daemon) moveNotProcessedTasksToPersistentQueue() {
-	for task := range d.TaskQueue {
-		d.Ch.AddNotProcessedTask(task.ID)
+		return nil
 	}
 }
 
 func (d *Daemon) logFinalMetrics() {
 	metrics := d.Metrics.Recorder.GetMetrics()
-	metrics["not_processed_tasks_count"] = uint64(len(d.Ch.GetAllNotProcessedTasks()))
-	metrics["not_processed_tasks"] = d.Ch.GetAllNotProcessedTasks()
 	formattedMetrics, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
 		d.logger.WithError(err).Error("Failed to format metrics")

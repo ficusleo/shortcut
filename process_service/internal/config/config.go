@@ -7,10 +7,9 @@ import (
 
 	"github.com/spf13/viper"
 
-	"submit_service/internal/bus"
-	"submit_service/internal/metrics"
-	"submit_service/internal/repository"
-	webapi "submit_service/internal/web-api"
+	"process_service/internal/bus"
+	"process_service/internal/metrics"
+	"process_service/internal/repository"
 )
 
 const (
@@ -22,10 +21,9 @@ const (
 
 // AppConfig is an example for app's config container
 type AppConfig struct {
-	RepoConf  *repository.Config `mapstructure:"repository"`
 	RedisConf *bus.Config `mapstructure:"bus"`
+	RepoConf  *repository.Config `mapstructure:"repository"`
 	Metrics *metrics.Config    `mapstructure:"metrics"`
-	WebAPI  *webapi.Config     `mapstructure:"web_api"`
 }
 
 func defaultSearchParths() []string {

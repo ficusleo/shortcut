@@ -11,13 +11,11 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/dig"
 
-	"submit_service/internal/bus"
-	"submit_service/internal/config"
-	"submit_service/internal/daemon"
-	"submit_service/internal/metrics"
-	"submit_service/internal/repository"
-	"submit_service/internal/services"
-	webapi "submit_service/internal/web-api"
+	"process_service/extapi"
+	"process_service/internal/config"
+	"process_service/internal/daemon"
+	"process_service/internal/metrics"
+	"process_service/internal/repository"
 )
 
 const (
@@ -37,14 +35,11 @@ func main() {
 	container.Provide(PovideTaskService)
 	container.Provide(ProvideMetrics)
 	container.Provide(ProvideDaemon)
-	container.Provide(ProvideWebAPI)
 
 	// the dependencies will stop in the order they were registered in the stoppables group
 	// should stop them in this order to ensure no data loss:
-	// webapi.API: Stop receiving new traffic (using the readiness logic we just added).
 	// daemon.Daemon: Finish processing the tasks already in the internal queue.
 	// metrics.Service: Stop the metrics server only after everything else is done.
-	container.Provide(func(api *webapi.API) Stoppable { return api }, dig.Group("stoppables"))
 	container.Provide(func(d *daemon.Daemon) Stoppable { return d }, dig.Group("stoppables"))
 	container.Provide(func(m *metrics.Service) Stoppable { return m }, dig.Group("stoppables"))
 
@@ -52,8 +47,7 @@ func main() {
 		defer stop(ctx, args.Stop)
 
 		args.Repo.Start()
-		args.D.Start(ctx)
-		args.API.Start()
+		args.D.Start(ctx, extapi.New())
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -79,7 +73,6 @@ type RunArgs struct {
 	Repo   *repository.Service
 	D    *daemon.Daemon
 	M    *metrics.Service
-	API  *webapi.API
 	Stop StopArgs
 }
 
@@ -146,10 +139,6 @@ func PovideTaskService(repo *repository.Service) *repository.TaskRepository {
 	return repository.NewTaskRepository(repo)
 }
 
-func ProvideDaemon(ctx context.Context, busSrv *bus.Service, m *metrics.Service,logger *log.Logger) *daemon.Daemon {
-	return daemon.New(ctx, busSrv, numWorkers, queueSize, m, logger)
-}
-
-func ProvideWebAPI(ctx context.Context, conf *config.AppConfig, taskSrv *services.TaskService, m *metrics.Service, logger *log.Logger) *webapi.API {
-	return webapi.New(ctx, conf.WebAPI, taskSrv, m, logger)
+func ProvideDaemon(ctx context.Context, conf *config.AppConfig, m *metrics.Service, repo *repository.Service, taskRepo *repository.TaskRepository, logger *log.Logger) *daemon.Daemon {
+	return daemon.New(ctx, conf.RedisConf, numWorkers, queueSize, m, repo, taskRepo, logger)
 }

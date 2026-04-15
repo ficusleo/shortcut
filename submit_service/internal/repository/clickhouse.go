@@ -1,16 +1,15 @@
-package clickhouse
+package repository
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"sync"
 	"time"
 
 	ch "github.com/ClickHouse/clickhouse-go/v2"
+	log "github.com/sirupsen/logrus"
 
-	"shortcut/internal/metrics"
+	"submit_service/internal/metrics"
 )
 
 type Config struct {
@@ -63,9 +62,10 @@ func NewClient(ctx context.Context, conf *Config) (*Client, error) {
 type Service struct {
 	Client     *Client
 	metricsSrv *metrics.Service
+	ErrCh      chan error
+	logger     log.Logger
 	mux        *sync.Mutex
 	storage    map[string]struct{}
-	ErrCh      chan error
 }
 
 func NewService(ctx context.Context, conf *Config, m *metrics.Service, errCh chan error) (*Service, error) {
@@ -80,10 +80,28 @@ func NewService(ctx context.Context, conf *Config, m *metrics.Service, errCh cha
 	return &Service{
 		Client:     c,
 		metricsSrv: m,
+		ErrCh:      errCh,
 		mux:        &sync.Mutex{},
 		storage:    make(map[string]struct{}),
-		ErrCh:      errCh,
 	}, nil
+}
+
+func (s *Service) AddNotProcessedTask(taskID string) {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+	s.storage[taskID] = struct{}{}
+}
+
+func (s *Service) GetAllNotProcessedTasks() []string {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	res := make([]string, 0, len(s.storage))
+	for id := range s.storage {
+		res = append(res, id)
+	}
+
+	return res
 }
 
 func (c *Client) ensureTables() error {
@@ -93,6 +111,12 @@ func (c *Client) ensureTables() error {
 	ddls := []string{
 		`CREATE TABLE IF NOT EXISTS logs (ts DateTime64(9), val String) ENGINE = MergeTree() ORDER BY ts`,
 		`CREATE TABLE IF NOT EXISTS metrics (ts DateTime64(9), val String) ENGINE = MergeTree() ORDER BY ts`,
+		`CREATE TABLE IF NOT EXISTS tasks (
+			id UUID,
+			status String,
+			payload String,
+			ts DateTime64(9)
+		) ENGINE = MergeTree() ORDER BY ts`,
 	}
 	for _, ddl := range ddls {
 		if err := c.conn.Exec(ctx, ddl); err != nil {
@@ -122,74 +146,4 @@ func (s *Service) Start() {
 			}
 		}
 	}()
-}
-
-func (c *Client) WriteLog(entry map[string]any) error {
-	return c.postWithRetries(c.ctx, "logs", entry)
-}
-
-func (c *Client) WriteMetrics(metrics map[string]any) error {
-	return c.postWithRetries(c.ctx, "metrics", metrics)
-}
-
-func (s *Service) AddNotProcessedTask(taskID string) {
-	// store in in-memory set
-	if s == nil {
-		return
-	}
-	s.mux.Lock()
-	s.storage[taskID] = struct{}{}
-	s.mux.Unlock()
-
-	if s.Client != nil {
-		entry := map[string]any{"task_id": taskID}
-		if err := s.Client.WriteLog(entry); err != nil {
-			select {
-			case s.ErrCh <- err:
-			default:
-			}
-		}
-	}
-}
-
-func (s *Service) GetAllNotProcessedTasks() []string {
-	if s == nil {
-		return nil
-	}
-	s.mux.Lock()
-	defer s.mux.Unlock()
-
-	tasks := make([]string, 0, len(s.storage))
-	for taskID := range s.storage {
-		tasks = append(tasks, taskID)
-	}
-	return tasks
-}
-
-func (c *Client) postWithRetries(ctx context.Context, table string, data map[string]any) error {
-	query := "INSERT INTO " + table + " (ts, val) VALUES (?, ?)"
-	b, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-	req := &LogRequest{
-		TS:  time.Now(),
-		Val: bytes.NewBuffer(b).String(),
-	}
-	for i := 0; i < c.conf.NumRetries; i++ {
-		if err := c.conn.Exec(ctx, query, req.TS, req.Val); err != nil {
-			if i == c.conf.NumRetries-1 {
-				return err
-			}
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		return nil
-	}
-	return nil
-}
-
-type LogRequest struct {
-	TS  time.Time `db:"ts"`
-	Val string    `db:"val"`
 }

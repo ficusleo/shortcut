@@ -1,0 +1,6 @@
+.idea/
+scripts/
+*.json
+*.pem
+gen_json_schema.go
+bp
